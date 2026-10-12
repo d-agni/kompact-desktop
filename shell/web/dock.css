@@ -1,0 +1,321 @@
+/* The dock (6m-d, 6m-d2): a frosted rounded bar at the bottom of a DOCK_SURFACE_HEIGHT (250 px)
+   see-through surface; the room above it is for magnified icons, labels and window previews.
+   Sizes follow --icon (10d-1b: the Size setting; dock.js sets it and works out the rest). Transitions run only while the
+   pointer is on the dock or it slides in or out, so an idle dock costs kompact no frames. */
+:root {
+  --tint: rgba(36, 36, 44, 0.62);
+  --tint-vibrant: rgba(40, 40, 48, 0.26);
+  --border: rgba(255, 255, 255, 0.22);
+  --dot: rgba(255, 255, 255, 0.9);
+  --pop: rgba(32, 32, 38, 0.9);
+  --pop-border: rgba(255, 255, 255, 0.14);
+  --accent: #0a84ff;
+  --icon: 50px;
+}
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  cursor: default;
+  user-select: none;
+  font: 13px/1.2 -apple-system, "SF Pro Text", "Inter", "Cantarell", system-ui, sans-serif;
+  color: #fff;
+}
+
+/* ---- The bar ---- */
+#dock {
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-end;
+  height: calc(var(--icon) + 14px);
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--icon) * 0.44);
+  isolation: isolate;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 10px 30px rgba(0, 0, 0, 0.35);
+  transition: transform 220ms ease;
+}
+/* The tint over the (optional) blurred wallpaper, under the icons. */
+#dock::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--tint);
+  z-index: -1;
+}
+#dock.vibrant::before { background: var(--tint-vibrant); }
+#dock.hidden { transform: translateY(calc(100% + 10px)); }
+#dock.still, #dock.still * { transition: none !important; }
+
+/* ---- Icons ---- */
+.tile {
+  position: relative;
+  flex: none;
+  width: calc(var(--icon) + 8px);
+  height: calc(var(--icon) + 14px);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  transition: width 90ms ease-out;
+  outline: none;
+}
+/* What grows under the pointer, from its bottom edge. */
+.tile .lift {
+  position: absolute;
+  left: 50%;
+  bottom: 9px;
+  width: var(--icon);
+  height: var(--icon);
+  margin-left: calc(var(--icon) / -2);
+  transform-origin: 50% 100%;
+  transition: transform 90ms ease-out;
+}
+.tile .icon {
+  display: block;
+  width: var(--icon);
+  height: var(--icon);
+  object-fit: contain;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+}
+.tile:active .icon { filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35)) brightness(0.65); }
+.tile.dragging { z-index: 2; transition: none; }
+.tile.dragging .lift { transition: none; }
+.tile.dragging.remove .icon { opacity: 0.45; }
+/* Clicked to launch: bounce until a window shows (or a few times). */
+.tile.launching .icon { animation: bounce 0.7s ease-in-out 4; }
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  45% { transform: translateY(calc(var(--icon) * -0.4)); }
+}
+/* 10d-1b: the Dock settings can turn the bounce and the dots off. */
+body.no-bounce .tile.launching .icon { animation: none; }
+body.no-dots .dots { display: none; }
+/* One dot per window (up to three) under a running app, as on macOS. */
+.dots {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  display: flex;
+  justify-content: center;
+  gap: 3px;
+}
+.dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--dot);
+}
+.badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-radius: calc(var(--icon) * 0.24);
+  color: #fff;
+  font-size: calc(var(--icon) * 0.48);
+  font-weight: 600;
+}
+/* Launchpad: a grid of coloured squares, like its macOS icon. */
+.launchpad .badge {
+  background: linear-gradient(160deg, #9aa3b5, #4d5566);
+  padding: calc(var(--icon) * 0.18);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+}
+.launchpad .badge i { border-radius: 3px; }
+.sep {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  /* 10d-1: a wider, full-height place to right-click for the dock's own menu (the line stays 1 px). */
+  padding: calc(var(--icon) * 0.2) 8px;
+  margin: 0 -2px;
+  box-sizing: content-box;
+  background: rgba(255, 255, 255, 0.28);
+  background-clip: content-box;
+}
+
+/* ---- The name above a hovered icon ---- */
+#label {
+  position: absolute;
+  padding: 4px 10px;
+  border: 1px solid var(--pop-border);
+  border-radius: 7px;
+  background: var(--pop);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ---- An app's windows (6m-d2) ---- */
+#previews {
+  position: absolute;
+  display: flex;
+  gap: 10px;
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid var(--pop-border);
+  border-radius: 14px;
+  background: var(--pop);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+#previews[hidden] { display: none; }
+.card {
+  position: relative;
+  flex: 0 1 176px;
+  min-width: 96px;
+  padding: 4px;
+  border-radius: 10px;
+}
+.card:hover { background: rgba(255, 255, 255, 0.1); }
+.card .thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100px;
+  border-radius: 7px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.card.focused .thumb { box-shadow: inset 0 0 0 2px var(--accent); }
+.card .thumb .icon { width: 48px; height: 48px; filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.4)); }
+/* 6m-d3: the window itself, with its app icon small in the corner, as on macOS. */
+.card .thumb .shot { position: absolute; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); object-fit: contain; }
+.card .thumb.has-shot { background: rgba(0, 0, 0, 0.25) !important; }
+.card .thumb.has-shot > .icon { position: absolute; left: 6px; bottom: 6px; width: 24px; height: 24px; }
+.card .thumb.has-shot > .badge { border-radius: 6px; font-size: 12px; }
+.card.min .thumb .shot { opacity: 0.6; }
+.card .thumb .badge { font-size: 22px; }
+.card.min .thumb .icon { opacity: 0.55; }
+.card .tag {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+}
+.card .x {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font: 600 13px/20px system-ui, sans-serif;
+  text-align: center;
+  visibility: hidden;
+}
+.card:hover .x { visibility: visible; }
+.card .x:hover { background: #ff5f57; }
+.card .title {
+  margin-top: 6px;
+  padding: 0 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  text-align: center;
+}
+.card.min .title { color: rgba(255, 255, 255, 0.6); }
+
+/* 10d-3: light appearance (appearance.js sets data-theme). --accent comes from it too. */
+:root[data-theme="light"] {
+  --tint: rgba(246, 246, 248, 0.58);
+  --tint-vibrant: rgba(255, 255, 255, 0.36);
+  --border: rgba(0, 0, 0, 0.12);
+  --dot: rgba(0, 0, 0, 0.7);
+  --pop: rgba(246, 246, 248, 0.95);
+  --pop-border: rgba(0, 0, 0, 0.12);
+}
+:root[data-theme="light"] body { color: #1d1d1f; }
+:root[data-theme="light"] #dock { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 10px 30px rgba(0, 0, 0, 0.2); }
+:root[data-theme="light"] .sep { background-color: rgba(0, 0, 0, 0.2); }
+:root[data-theme="light"] .card:hover { background: rgba(0, 0, 0, 0.06); }
+:root[data-theme="light"] .card.min .title { color: rgba(0, 0, 0, 0.5); }
+:root[data-theme="light"] #label, :root[data-theme="light"] #previews { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18); }
+
+/* 10d-1c: the dock on the left or right edge (dock.js sets data-side): a column centred down
+   the edge; icons grow away from it; the dots sit on the edge side; the separator lies flat. */
+:root[data-side="left"] #dock,
+:root[data-side="right"] #dock {
+  top: 0;
+  bottom: 0;
+  width: calc(var(--icon) + 14px);
+  height: max-content;
+  margin: auto 0;
+  padding: 6px 0;
+  flex-direction: column;
+}
+:root[data-side="left"] #dock { left: 4px; right: auto; align-items: flex-start; }
+:root[data-side="right"] #dock { left: auto; right: 4px; align-items: flex-end; }
+:root[data-side="left"] #dock.hidden { transform: translateX(calc(-100% - 10px)); }
+:root[data-side="right"] #dock.hidden { transform: translateX(calc(100% + 10px)); }
+:root[data-side="left"] .tile,
+:root[data-side="right"] .tile {
+  width: calc(var(--icon) + 14px);
+  height: calc(var(--icon) + 8px);
+  transition: height 90ms ease-out;
+}
+:root[data-side="left"] .tile .lift,
+:root[data-side="right"] .tile .lift {
+  top: 50%;
+  bottom: auto;
+  margin: calc(var(--icon) / -2) 0 0;
+}
+:root[data-side="left"] .tile .lift { left: 9px; transform-origin: 0% 50%; }
+:root[data-side="right"] .tile .lift { left: auto; right: 9px; transform-origin: 100% 50%; }
+:root[data-side="left"] .dots,
+:root[data-side="right"] .dots {
+  top: 0;
+  bottom: 0;
+  flex-direction: column;
+  align-items: center;
+}
+:root[data-side="left"] .dots { left: 2px; right: auto; }
+:root[data-side="right"] .dots { left: auto; right: 2px; }
+:root[data-side="left"] .sep,
+:root[data-side="right"] .sep {
+  width: auto;
+  height: 1px;
+  padding: 8px calc(var(--icon) * 0.2);
+  margin: -2px 0;
+}
+:root[data-side="left"] .tile.launching .icon { animation-name: bounce-right; }
+:root[data-side="right"] .tile.launching .icon { animation-name: bounce-left; }
+@keyframes bounce-right {
+  0%, 100% { transform: translateX(0); }
+  45% { transform: translateX(calc(var(--icon) * 0.4)); }
+}
+@keyframes bounce-left {
+  0%, 100% { transform: translateX(0); }
+  45% { transform: translateX(calc(var(--icon) * -0.4)); }
+}
+/* Beside a side dock the windows stack downwards (the surface is only so wide). */
+:root[data-side="left"] #previews,
+:root[data-side="right"] #previews {
+  flex-direction: column;
+  max-width: none;
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
+}
+:root[data-side="left"] .card,
+:root[data-side="right"] .card { flex: none; width: 176px; }

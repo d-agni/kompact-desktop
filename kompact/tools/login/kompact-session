@@ -1,0 +1,25 @@
+#!/bin/sh
+# 14d: the kompact desktop, as greetd starts it after you log in (installed as
+# /usr/local/bin/kompact-session by tools/install-login.sh). Logs in ~/.local/state/kompact/
+# (kompact.log, shell.log; the run before as *.old).
+state="${XDG_STATE_HOME:-$HOME/.local/state}/kompact"
+mkdir -p "$state"
+for f in kompact shell; do
+    [ -f "$state/$f.log" ] && mv -f "$state/$f.log" "$state/$f.log.old"
+done
+export KOMPACT_SHELL=on KOMPACT_SHELL_LOG="$state/shell.log"
+# 15b: screenshots and screen sharing through the wlr portal, set up once per user (the same two
+# files as Settings → Screen Sharing → Set Up and tools/install-portals.sh; yours are kept).
+config="${XDG_CONFIG_HOME:-$HOME/.config}"
+if [ -x /usr/libexec/xdg-desktop-portal-wlr ] && [ ! -f "$config/xdg-desktop-portal/kompact-portals.conf" ]; then
+    mkdir -p "$config/xdg-desktop-portal" "$config/xdg-desktop-portal-wlr"
+    printf '[preferred]\ndefault=gtk\norg.freedesktop.impl.portal.Screenshot=wlr\norg.freedesktop.impl.portal.ScreenCast=wlr\n' \
+        >"$config/xdg-desktop-portal/kompact-portals.conf"
+    [ -f "$config/xdg-desktop-portal-wlr/kompact" ] ||
+        printf '[screencast]\nmax_fps=10\nchooser_type=simple\nchooser_cmd=slurp -f %%o -or\n' >"$config/xdg-desktop-portal-wlr/kompact"
+fi
+export RUST_LOG="${RUST_LOG:-info}"
+# The wallpaper until you choose one in Settings (as ktest-desktop.sh).
+default=/usr/share/backgrounds/cnusr25-Simple_Raccoon_Dark.png
+[ -f "$default" ] && export KOMPACT_WALLPAPER_DEFAULT="$default"
+exec /usr/local/bin/kompact --backend drm --no-startup-app >"$state/kompact.log" 2>&1

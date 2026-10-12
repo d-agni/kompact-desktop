@@ -1,0 +1,35 @@
+/* 12c: the on-screen volume level: a frosted square, the speaker (or microphone) and 16 segments. */
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
+.osd {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 200px;
+  height: 200px;
+  box-sizing: border-box;
+  border-radius: 22px;
+  background: rgba(40, 40, 48, 0.82);
+  color: #f2f2f7;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.osd.shown { opacity: 1; transition: none; }
+:root[data-theme="light"] .osd { background: rgba(236, 236, 240, 0.86); color: #1d1d1f; }
+svg { width: 96px; height: 96px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+svg .body { fill: currentColor; stroke: none; }
+svg .slash, svg .mic { display: none; }
+.osd[data-waves="0"] .w1, .osd[data-waves="0"] .w2, .osd[data-waves="0"] .w3,
+.osd[data-waves="1"] .w2, .osd[data-waves="1"] .w3,
+.osd[data-waves="2"] .w3 { display: none; }
+.osd.muted .slash { display: inline; }
+.osd.mic .body, .osd.mic .w1, .osd.mic .w2, .osd.mic .w3 { display: none; }
+.osd.mic .mic { display: inline; }
+.bar { display: flex; gap: 2px; }
+.bar i { width: 7px; height: 8px; background: currentColor; opacity: 0.25; }
+.bar i.on { opacity: 1; }
+.osd.mic .bar { visibility: hidden; }

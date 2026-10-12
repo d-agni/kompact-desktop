@@ -1,0 +1,19 @@
+{
+  "productName": "kompact-shell",
+  "version": "0.1.1",
+  "identifier": "org.kompact.shell",
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png"]
+  }
+}

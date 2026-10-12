@@ -1,0 +1,9 @@
+# kompact's login screen (written by kompact/tools/install-login.sh; the package's own config is
+# kept as config.toml.before-kompact and comes back with `install-login.sh remove`).
+[terminal]
+# VT 7, as the package has it: text consoles stay on Ctrl+Alt+F1–F6.
+vt = 7
+
+[default_session]
+command = "/usr/local/bin/kompact-greeter-session"
+user = "_greetd"

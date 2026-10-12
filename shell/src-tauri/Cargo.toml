@@ -1,0 +1,41 @@
+[package]
+name = "kompact-shell"
+version = "0.1.1"
+license = "MIT"
+edition = "2021"
+rust-version = "1.90"
+description = "kompact's desktop shell on Tauri: panel, wallpaper and launcher as wlr-layer-shell surfaces"
+
+[[bin]]
+name = "kompact-shell"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+# No `x11` (Wayland only) and no `dbus`: with dbus, tao asks xdg-desktop-portal for the colour
+# scheme at start-up, and that portal can hang while it starts (cost the GTK4 shell 25 s in 6a).
+tauri = { version = "2", default-features = false, features = ["wry", "compression", "dynamic-acl"] }
+# GTK3 and WebKit versions Tauri 2 itself uses (gtk 0.18, webkit2gtk 2.0).
+gtk = "0.18"
+gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
+webkit2gtk = { version = "2.0", features = ["v2_40"] }
+# 14a: kompact-lock reads the page's messages (already in the tree through webkit2gtk).
+javascriptcore-rs = "1.1"
+# Same cairo as gtk 0.18; `png` for the 6t-a diagnostic snapshots (KOMPACT_SHELL_SNAPSHOT).
+cairo-rs = { version = "0.18", features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 8c: the notification server (org.freedesktop.Notifications) on the session bus; pure Rust,
+# on the tokio runtime Tauri already runs.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+# 12a: NetworkManager's signal stream (already in the tree through zbus) and timers on Tauri's
+# tokio runtime (tokio is Tauri's own; `time` turns its timer on; 12b: `sync` for the Bluetooth
+# agent's questions).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio = { version = "1", default-features = false, features = ["time", "sync"] }
+# 12j: statvfs for the About pane's disk space (already in the tree through Tauri).
+libc = "0.2"

@@ -1,0 +1,21 @@
+[package]
+name = "kompact-shell-6b"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+description = "kompact's desktop shell: HTML/CSS/JS panel, launcher and wallpaper on wlr-layer-shell"
+
+[[bin]]
+name = "kompact-shell-6b"
+path = "src/main.rs"
+
+[dependencies]
+# Re-exports gtk4 0.11, gdk4, gio and glib; we use those through it.
+webkit6 = "0.6"
+# Listed only for the feature: webkit6 0.6 uses gtk::Accessible, which gtk4 0.11 gates behind
+# v4_10 without webkit6 enabling it; v4_12 adds CssProvider::load_from_string (the launcher).
+# Ubuntu 26.04 ships GTK 4.22.
+gtk4 = { version = "0.11", features = ["v4_10"] }
+gtk4-layer-shell = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

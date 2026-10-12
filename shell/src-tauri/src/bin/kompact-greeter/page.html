@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Log In</title>
+<style>
+  /* 14c: kompact's login screen, macOS style: the time at the top, the people low in the middle
+     (one picked: picture, name, password, session), Restart and Shut Down at the bottom. */
+  :root {
+    --fg: #ffffff;
+    --muted: rgba(255, 255, 255, 0.72);
+    --field: rgba(255, 255, 255, 0.22);
+    --field-focus: rgba(255, 255, 255, 0.3);
+    --accent: #0a84ff;
+  }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #1c1c22; color: var(--fg);
+    font: 13px/1.3 -apple-system, "SF Pro Text", "Inter", "Cantarell", system-ui, sans-serif;
+    cursor: default; user-select: none;
+  }
+  .bg { position: fixed; inset: -40px; background: radial-gradient(120% 90% at 30% 20%, #3a4a7a, #1c1c2c 60%, #101018) center / cover; filter: blur(28px) saturate(1.15); transition: opacity 0.4s; }
+  .bg.sharp { inset: 0; filter: none; }
+  #tint { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.28); }
+  main { position: relative; height: 100%; display: flex; flex-direction: column; align-items: center; }
+  #test { position: fixed; top: 0; left: 0; right: 0; padding: 6px; text-align: center; background: rgba(255, 159, 10, 0.85); color: #1c1c22; font-weight: 600; font-size: 12px; }
+  #date { margin-top: 9vh; font-size: 22px; font-weight: 600; color: var(--muted); text-shadow: 0 1px 6px rgba(0, 0, 0, 0.3); }
+  #time { font-size: 96px; font-weight: 700; letter-spacing: -2px; line-height: 1; text-shadow: 0 2px 12px rgba(0, 0, 0, 0.25); font-variant-numeric: tabular-nums; }
+  #message { margin-top: 14px; max-width: 60vw; text-align: center; font-size: 14px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45); }
+  #message:empty { display: none; }
+  .spacer { flex: 1; }
+  #form { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 6vh; }
+  body:not(.main) #form, body:not(.main) #power { display: none; }
+  #people { display: flex; gap: 22px; align-items: flex-end; }
+  .person { display: flex; flex-direction: column; align-items: center; gap: 8px; border: 0; background: none; color: inherit; font: inherit; padding: 0; opacity: 0.55; transition: opacity 0.2s; }
+  .person:hover { opacity: 0.85; }
+  .person.on { opacity: 1; }
+  .avatar {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: linear-gradient(#9aa0ad, #646a78) center / cover;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 600; color: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    transition: width 0.2s, height 0.2s, font-size 0.2s;
+  }
+  .person.on .avatar { width: 76px; height: 76px; font-size: 28px; }
+  .person .name { font-size: 13px; font-weight: 600; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); }
+  .person.on .name { font-size: 15px; }
+  #entry { position: relative; height: 30px; display: flex; align-items: center; justify-content: center; }
+  #password {
+    width: 200px; height: 28px; box-sizing: border-box; padding: 0 30px 0 12px;
+    border: 0; border-radius: 14px; background: var(--field); color: var(--fg);
+    font: inherit; outline: none; caret-color: var(--fg);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  }
+  #password::placeholder { color: var(--muted); }
+  #password:focus { background: var(--field-focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+  #password:disabled { opacity: 0.6; }
+  #go { position: absolute; right: 4px; width: 22px; height: 22px; border-radius: 50%; border: 0; padding: 0; background: rgba(255, 255, 255, 0.35); color: #1c1c22; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.15s; }
+  #go.on { opacity: 1; }
+  #go svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.35); border-top-color: #fff; animation: spin 0.8s linear infinite; position: absolute; right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #session { font: inherit; font-size: 12px; color: var(--fg); background: rgba(255, 255, 255, 0.14); border: 0; border-radius: 10px; padding: 3px 10px; outline: none; }
+  #session option { color: #1c1c22; }
+  #note { min-height: 18px; font-size: 12px; color: var(--muted); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); text-align: center; max-width: 60vw; }
+  #note.error { color: #fff; }
+  .shake { animation: shake 0.42s; }
+  @keyframes shake { 10%, 90% { transform: translateX(-2px); } 20%, 80% { transform: translateX(5px); } 30%, 50%, 70% { transform: translateX(-9px); } 40%, 60% { transform: translateX(9px); } }
+  #power { display: flex; gap: 34px; margin-bottom: 5vh; }
+  .pw { display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; padding: 0; }
+  .pw span.ring { width: 34px; height: 34px; border-radius: 50%; background: rgba(255, 255, 255, 0.16); display: flex; align-items: center; justify-content: center; }
+  .pw:hover span.ring { background: rgba(255, 255, 255, 0.28); }
+  .pw svg { width: 16px; height: 16px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; }
+  body.started #form > *:not(#note), body.started #power { visibility: hidden; }
+</style>
+</head>
+<body>
+<div class="bg" id="bg"></div><div id="tint"></div>
+<main>
+  <div id="test" hidden>Login screen test: Ctrl+Q quits. Logging in only reaches the test stand-in.</div>
+  <div id="date"></div>
+  <div id="time"></div>
+  <div id="message"></div>
+  <div class="spacer"></div>
+  <div id="form">
+    <div id="people"></div>
+    <div id="entry">
+      <input id="password" type="password" placeholder="Enter Password" autocomplete="off" spellcheck="false" aria-label="Password">
+      <button id="go" tabindex="-1" aria-label="Log In"><svg viewBox="0 0 12 12"><path d="M2 6h8M6.5 2.5 10 6l-3.5 3.5"/></svg></button>
+    </div>
+    <select id="session" aria-label="Session" hidden></select>
+    <div id="note" role="status" aria-live="polite"></div>
+  </div>
+  <div id="power">
+    <button class="pw" data-power="restart"><span class="ring"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.8h-2.8"/></svg></span>Restart</button>
+    <button class="pw" data-power="shutdown"><span class="ring"><svg viewBox="0 0 16 16"><path d="M8 2v5.5M4.6 4.2a5 5 0 1 0 6.8 0"/></svg></span>Shut Down</button>
+  </div>
+</main>
+<script>
+/*GREETER*/
+"use strict";
+const G = window.GREETER || { users: [], sessions: [] };
+const $ = (id) => document.getElementById(id);
+const field = $("password");
+const note = $("note");
+const go = $("go");
+const send = (m) => window.webkit.messageHandlers.kompact.postMessage(JSON.stringify(m));
+
+if (G.main) document.body.classList.add("main");
+$("test").hidden = !G.test;
+
+let current = Math.min(G.first || 0, Math.max(0, G.users.length - 1));
+let checking = false;
+let closedUntil = 0;
+let countdown = 0;
+
+function tick() {
+  const now = new Date();
+  $("time").textContent = now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  $("date").textContent = now.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+  setTimeout(tick, 60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 20);
+}
+tick();
+
+function say(text, error = false) {
+  note.textContent = text;
+  note.classList.toggle("error", error);
+}
+
+/** The picked person's background and message (published by their session). */
+function showLook(u) {
+  const bg = $("bg");
+  bg.style.backgroundImage = u && u.wallpaper ? `url("${encodeURI(u.wallpaper)}")` : "";
+  bg.classList.toggle("sharp", !!(u && u.wallpaper && u.blur === false));
+  $("message").textContent = (u && u.message) || "";
+}
+
+function avatarOf(u) {
+  const a = document.createElement("div");
+  a.className = "avatar";
+  if (u.picture) a.style.backgroundImage = `url("${encodeURI(u.picture)}")`;
+  else a.textContent = u.initials || "";
+  return a;
+}
+
+function renderPeople() {
+  const box = $("people");
+  box.replaceChildren(
+    ...G.users.map((u, i) => {
+      const b = document.createElement("button");
+      b.className = "person" + (i === current ? " on" : "");
+      b.tabIndex = -1;
+      b.append(avatarOf(u));
+      const n = document.createElement("div");
+      n.className = "name";
+      n.textContent = u.name;
+      b.append(n);
+      b.addEventListener("click", () => pick(i));
+      return b;
+    }),
+  );
+  const sel = $("session");
+  sel.hidden = G.sessions.length < 2;
+  sel.replaceChildren(
+    ...G.sessions.map((s) => {
+      const o = document.createElement("option");
+      o.value = s.id;
+      o.textContent = s.name;
+      return o;
+    }),
+  );
+  const u = G.users[current];
+  if (u && u.session) sel.value = u.session;
+  showLook(u);
+  if (!G.users.length) say("No one can log in here (no accounts with a login shell).", true);
+  else if (!G.sessions.length) say("No sessions are installed (/usr/share/wayland-sessions).", true);
+  else if (!G.greetd) say("greetd isn't running, so logging in won't work.", true);
+}
+
+function pick(i) {
+  if (checking || i < 0 || i >= G.users.length || i === current) return;
+  current = i;
+  field.value = "";
+  go.classList.remove("on");
+  if (Date.now() >= closedUntil) say("");
+  renderPeople();
+  send({ type: "select", user: G.users[i].login });
+  field.focus();
+}
+
+function submit() {
+  if (checking || !field.value || Date.now() < closedUntil || !G.users[current]) return;
+  send({ type: "login", user: G.users[current].login, password: field.value, session: $("session").value || (G.sessions[0] && G.sessions[0].id) });
+}
+
+function caps(e) {
+  if (checking || Date.now() < closedUntil) return;
+  if (e && e.getModifierState && e.getModifierState("CapsLock")) say("Caps Lock is on");
+  else if (note.textContent === "Caps Lock is on") say("");
+}
+
+field.addEventListener("keydown", (e) => {
+  caps(e);
+  if (e.key === "Enter") submit();
+  else if (e.key === "Escape") field.value = "";
+  else if (e.key === "ArrowLeft" && !field.value) pick(current - 1);
+  else if (e.key === "ArrowRight" && !field.value) pick(current + 1);
+  go.classList.toggle("on", !!field.value);
+});
+field.addEventListener("keyup", (e) => { caps(e); go.classList.toggle("on", !!field.value); });
+field.addEventListener("input", () => go.classList.toggle("on", !!field.value));
+go.addEventListener("click", submit);
+document.querySelectorAll("[data-power]").forEach((b) => b.addEventListener("click", () => send({ type: "power", action: b.dataset.power })));
+document.addEventListener("keydown", (e) => {
+  if (G.test && e.ctrlKey && (e.key === "q" || e.key === "Q")) send({ type: "quit" });
+  else if (G.main && document.activeElement !== field && !field.disabled) field.focus();
+});
+
+renderPeople();
+if (G.main) field.focus();
+
+window.kompactGreeter = {
+  checking(on) {
+    checking = on;
+    field.disabled = on;
+    let spin = document.querySelector(".spin");
+    if (on && !spin) {
+      spin = document.createElement("div");
+      spin.className = "spin";
+      $("entry").append(spin);
+      go.classList.remove("on");
+      say("");
+    }
+    if (!on && spin) spin.remove();
+  },
+  note(text) { say(text); },
+  error(text) {
+    this.checking(false);
+    say(text, true);
+    if (G.main) field.focus();
+  },
+  failed({ failures, wait_ms }) {
+    this.checking(false);
+    field.value = "";
+    go.classList.remove("on");
+    const entry = $("entry");
+    entry.classList.remove("shake");
+    void entry.offsetWidth;
+    entry.classList.add("shake");
+    clearInterval(countdown);
+    if (wait_ms > 0) {
+      closedUntil = Date.now() + wait_ms;
+      field.disabled = true;
+      const show = () => {
+        const left = Math.ceil((closedUntil - Date.now()) / 1000);
+        if (left <= 0) {
+          clearInterval(countdown);
+          field.disabled = false;
+          say("");
+          field.focus();
+          return;
+        }
+        say(`Too many tries. Try again in ${left} s.`, true);
+      };
+      show();
+      countdown = setInterval(show, 500);
+    } else {
+      say(failures > 1 ? `Wrong password (${failures} tries)` : "Wrong password", true);
+      field.focus();
+    }
+  },
+  started() {
+    this.checking(false);
+    document.body.classList.add("started");
+    say("Logging in…");
+  },
+  select(login) {
+    if (G.main) return;
+    const i = G.users.findIndex((u) => u.login === login);
+    if (i >= 0) { current = i; showLook(G.users[i]); }
+  },
+};
+</script>
+</body>
+</html>

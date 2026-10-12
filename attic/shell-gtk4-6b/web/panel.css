@@ -1,0 +1,26 @@
+/* The panel is 28 px high (PANEL_HEIGHT in src/config.rs). Background matches PANEL_BG there. */
+:root {
+  --bg: rgb(26, 26, 38);
+  --fg: #d8d8e0;
+  --dim: #8a8aa0;
+}
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1 system-ui, sans-serif;
+  cursor: default;
+  user-select: none;
+}
+.panel {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+.brand { color: var(--dim); font-weight: 600; letter-spacing: 0.04em; }
+.spacer { flex: 1; }
+#clock { font-variant-numeric: tabular-nums; }

@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Locked</title>
+<style>
+  /* 14a: kompact's lock screen, macOS style: the time large at the top, the user and the
+     password field low in the middle, over the blurred wallpaper. */
+  :root {
+    --fg: #ffffff;
+    --muted: rgba(255, 255, 255, 0.72);
+    --field: rgba(255, 255, 255, 0.22);
+    --field-focus: rgba(255, 255, 255, 0.3);
+    --accent: #0a84ff;
+    --error: #ff6b6b;
+    --tint: rgba(0, 0, 0, 0.28);
+  }
+  :root.light { --tint: rgba(0, 0, 0, 0.12); }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #1c1c22;
+    color: var(--fg);
+    font: 13px/1.3 -apple-system, "SF Pro Text", "Inter", "Cantarell", system-ui, sans-serif;
+    cursor: default;
+    user-select: none;
+  }
+  #bg {
+    position: fixed;
+    inset: -40px;
+    background: radial-gradient(120% 90% at 30% 20%, #3a4a7a, #1c1c2c 60%, #101018);
+    background-size: cover;
+    background-position: center;
+    filter: blur(28px) saturate(1.15);
+  }
+  #bg.sharp { inset: 0; filter: none; }
+  #tint { position: fixed; inset: 0; background: var(--tint); }
+  #message { margin-top: 14px; max-width: 60vw; text-align: center; font-size: 14px; color: var(--fg); text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45); }
+  #message:empty { display: none; }
+  main { position: relative; height: 100%; display: flex; flex-direction: column; align-items: center; }
+  #date { margin-top: 9vh; font-size: 22px; font-weight: 600; color: var(--muted); text-shadow: 0 1px 6px rgba(0, 0, 0, 0.3); }
+  #time { font-size: 96px; font-weight: 700; letter-spacing: -2px; line-height: 1; text-shadow: 0 2px 12px rgba(0, 0, 0, 0.25); font-variant-numeric: tabular-nums; }
+  .spacer { flex: 1; }
+  #who { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 13vh; }
+  #avatar {
+    width: 72px; height: 72px; border-radius: 50%;
+    background: linear-gradient(#9aa0ad, #646a78) center / cover;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; font-weight: 600; color: #fff;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+  #name { font-size: 15px; font-weight: 600; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); }
+  #entry { position: relative; height: 30px; display: flex; align-items: center; justify-content: center; }
+  #password {
+    width: 190px; height: 28px; box-sizing: border-box;
+    padding: 0 30px 0 12px; border: 0; border-radius: 14px;
+    background: var(--field); color: var(--fg);
+    font: inherit; font-size: 13px; outline: none;
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    caret-color: var(--fg);
+  }
+  #password::placeholder { color: var(--muted); }
+  #password:focus { background: var(--field-focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+  #password:disabled { opacity: 0.6; }
+  #go {
+    position: absolute; right: 4px; width: 22px; height: 22px; border-radius: 50%;
+    border: 0; padding: 0; background: rgba(255, 255, 255, 0.35); color: #1c1c22;
+    display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.15s;
+  }
+  #go.on { opacity: 1; }
+  #go svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.35); border-top-color: #fff; animation: spin 0.8s linear infinite; position: absolute; right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #note { min-height: 18px; font-size: 12px; color: var(--muted); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
+  #note.error { color: #fff; }
+  .shake { animation: shake 0.42s; }
+  @keyframes shake {
+    10%, 90% { transform: translateX(-2px); }
+    20%, 80% { transform: translateX(5px); }
+    30%, 50%, 70% { transform: translateX(-9px); }
+    40%, 60% { transform: translateX(9px); }
+  }
+  /* A screen without the keyboard: the time and who, no field (kompact gives the keyboard to the
+     monitor under the pointer). */
+  body.away #entry, body.away #note { visibility: hidden; }
+  body.away #hint { visibility: visible; }
+  #hint { visibility: hidden; font-size: 12px; color: var(--muted); height: 30px; display: flex; align-items: center; margin-top: -30px; }
+</style>
+</head>
+<body>
+<div id="bg"></div><div id="tint"></div>
+<main>
+  <div id="date"></div>
+  <div id="time"></div>
+  <div id="message"></div>
+  <div class="spacer"></div>
+  <div id="who">
+    <div id="avatar"></div>
+    <div id="name"></div>
+    <div id="entry">
+      <input id="password" type="password" placeholder="Enter Password" autocomplete="off" spellcheck="false" aria-label="Password">
+      <button id="go" tabindex="-1" aria-label="Unlock"><svg viewBox="0 0 12 12"><path d="M2 6h8M6.5 2.5 10 6l-3.5 3.5"/></svg></button>
+    </div>
+    <div id="hint">Move the pointer here to unlock</div>
+    <div id="note" role="status" aria-live="polite"></div>
+  </div>
+</main>
+<script>
+/*LOCK*/
+"use strict";
+const L = window.LOCK || {};
+const $ = (id) => document.getElementById(id);
+const field = $("password");
+const note = $("note");
+const go = $("go");
+
+const ACCENTS = { blue: "#0a84ff", purple: "#bf5af2", pink: "#ff375f", red: "#ff453a", orange: "#ff9f0a", yellow: "#ffd60a", green: "#30d158", graphite: "#8e8e93" };
+document.documentElement.style.setProperty("--accent", ACCENTS[L.accent] || ACCENTS.blue);
+if (L.dark === false) document.documentElement.classList.add("light");
+if (L.wallpaper) $("bg").style.backgroundImage = `url("${encodeURI(L.wallpaper)}")`;
+// 14b: Settings → Users & Login: the picture as it is, and a message under the time.
+if (L.blur === false) $("bg").classList.add("sharp");
+$("message").textContent = L.message || "";
+$("name").textContent = L.name || "";
+if (L.avatar) $("avatar").style.backgroundImage = `url("${encodeURI(L.avatar)}")`;
+else $("avatar").textContent = L.initials || "";
+
+function tick() {
+  const now = new Date();
+  $("time").textContent = now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: L.hour24 === false });
+  $("date").textContent = now.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+  setTimeout(tick, 60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 20);
+}
+tick();
+
+let checking = false;
+let closedUntil = 0;
+let countdown = 0;
+
+function say(text, error = false) {
+  note.textContent = text;
+  note.classList.toggle("error", error);
+}
+
+function caps(e) {
+  if (checking || Date.now() < closedUntil) return;
+  const on = e && e.getModifierState && e.getModifierState("CapsLock");
+  if (on) say("Caps Lock is on");
+  else if (note.textContent === "Caps Lock is on") say("");
+}
+
+function submit() {
+  if (checking || !field.value || Date.now() < closedUntil) return;
+  const password = field.value;
+  window.webkit.messageHandlers.kompact.postMessage(JSON.stringify({ type: "unlock", password }));
+}
+
+field.addEventListener("keydown", (e) => {
+  caps(e);
+  if (e.key === "Enter") submit();
+  else if (e.key === "Escape") field.value = "";
+  go.classList.toggle("on", !!field.value);
+});
+field.addEventListener("keyup", (e) => {
+  caps(e);
+  go.classList.toggle("on", !!field.value);
+});
+field.addEventListener("input", () => go.classList.toggle("on", !!field.value));
+go.addEventListener("click", submit);
+
+// Typing anywhere goes to the field.
+document.addEventListener("keydown", (e) => {
+  if (document.activeElement !== field && !field.disabled) field.focus();
+});
+
+function setAway(away) {
+  document.body.classList.toggle("away", away);
+  if (!away && !field.disabled) field.focus();
+}
+window.addEventListener("focus", () => setAway(false));
+window.addEventListener("blur", () => setAway(true));
+setAway(!document.hasFocus());
+
+window.kompactLock = {
+  checking(on) {
+    checking = on;
+    field.disabled = on;
+    let spin = document.querySelector(".spin");
+    if (on && !spin) {
+      spin = document.createElement("div");
+      spin.className = "spin";
+      $("entry").append(spin);
+      go.classList.remove("on");
+    }
+    if (!on && spin) spin.remove();
+  },
+  failed({ failures, wait_ms }) {
+    this.checking(false);
+    field.value = "";
+    go.classList.remove("on");
+    const entry = $("entry");
+    entry.classList.remove("shake");
+    void entry.offsetWidth;
+    entry.classList.add("shake");
+    clearInterval(countdown);
+    if (wait_ms > 0) {
+      closedUntil = Date.now() + wait_ms;
+      field.disabled = true;
+      const show = () => {
+        const left = Math.ceil((closedUntil - Date.now()) / 1000);
+        if (left <= 0) {
+          clearInterval(countdown);
+          field.disabled = false;
+          say("");
+          if (document.hasFocus()) field.focus();
+          return;
+        }
+        say(`Too many tries. Try again in ${left} s.`, true);
+      };
+      show();
+      countdown = setInterval(show, 500);
+    } else {
+      say(failures > 1 ? `Wrong password (${failures} tries)` : "Wrong password", true);
+      field.focus();
+    }
+  },
+};
+</script>
+</body>
+</html>

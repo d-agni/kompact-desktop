@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=kompact
+Comment=The kompact desktop
+Exec=/usr/local/bin/kompact-session
+Type=Application
+DesktopNames=kompact

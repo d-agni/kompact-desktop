@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Settings</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <!-- 10c: the window's own frame: edges to resize it (GTK3 draws none without its title bar). -->
+  <div class="edge n" data-edge="North"></div><div class="edge s" data-edge="South"></div>
+  <div class="edge e" data-edge="East"></div><div class="edge w" data-edge="West"></div>
+  <div class="edge ne" data-edge="NorthEast"></div><div class="edge nw" data-edge="NorthWest"></div>
+  <div class="edge se" data-edge="SouthEast"></div><div class="edge sw" data-edge="SouthWest"></div>
+  <div class="app">
+    <!-- 10c: the sidebar; more panes come with 10d. -->
+    <nav class="sidebar" aria-label="Settings">
+      <!-- The title bar, macOS style: the buttons sit in the sidebar; drag here to move. -->
+      <div class="traffic" data-drag>
+        <button class="light close" data-win="close" aria-label="Close" title="Close"><svg viewBox="0 0 10 10"><path d="M3 3l4 4M7 3l-4 4"/></svg></button>
+        <button class="light min" data-win="minimize" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 10 10"><path d="M2.5 5h5"/></svg></button>
+        <button class="light zoom" data-win="maximize" aria-label="Zoom" title="Zoom"><svg viewBox="0 0 10 10"><path d="M3 6.5V3h3.5M7 3.5V7H3.5"/></svg></button>
+      </div>
+      <input id="search" class="search" type="search" placeholder="Search" aria-label="Search shortcuts" autocomplete="off">
+      <ul class="panes">
+        <!-- 10d-1: one button per pane; data-pane names the <main> it shows. 13h: grouped as on macOS
+             (network; alerts and sound; general; desktop and screen; security; input). -->
+        <li><button class="pane" data-pane="network">
+          <span class="pane-icon network" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><path d="M2.4 6.6a8.6 8.6 0 0 1 11.2 0M4.6 9.2a5.2 5.2 0 0 1 6.8 0"/><circle cx="8" cy="12" r="1.2" fill="currentColor"/></svg>
+          </span>
+          Network
+        </button></li>
+        <li><button class="pane" data-pane="bluetooth">
+          <span class="pane-icon bluetooth" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4.5 5 11 10.8 8 13.6V2.4l3 2.8L4.5 11"/></svg>
+          </span>
+          Bluetooth
+        </button></li>
+        <li class="sep" role="separator"></li>
+        <li><button class="pane" data-pane="notifications">
+          <span class="pane-icon notifications" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.2 1.5H2.8zM6.5 14h3"/></svg>
+          </span>
+          Notifications
+        </button></li>
+        <li><button class="pane" data-pane="sound">
+          <span class="pane-icon sound" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path d="M4 9h3.5L12 5v14l-4.5-4H4z" fill="currentColor" stroke="none"/><path d="M15 9.5a3.5 3.5 0 0 1 0 5M17.5 7a7 7 0 0 1 0 10"/></svg>
+          </span>
+          Sound
+        </button></li>
+        <li class="sep" role="separator"></li>
+        <li><button class="pane" data-pane="about">
+          <span class="pane-icon about" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6"/><path d="M8 7.2V11.5"/><circle cx="8" cy="5" r="0.9" fill="currentColor"/></svg>
+          </span>
+          About
+        </button></li>
+        <li><button class="pane" data-pane="appearance">
+          <span class="pane-icon appearance" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg>
+          </span>
+          Appearance
+        </button></li>
+        <li><button class="pane" data-pane="control">
+          <span class="pane-icon control" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="1.5" y="3" width="13" height="4" rx="2"/><circle cx="11.5" cy="5" r="1" fill="currentColor"/><rect x="1.5" y="9" width="13" height="4" rx="2"/><circle cx="4.5" cy="11" r="1" fill="currentColor"/></svg>
+          </span>
+          Control Center
+        </button></li>
+        <li><button class="pane" data-pane="datetime">
+          <span class="pane-icon datetime" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>
+          </span>
+          Date &amp; Time
+        </button></li>
+        <li><button class="pane" data-pane="defaults">
+          <span class="pane-icon defaults" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></svg>
+          </span>
+          Default Apps
+        </button></li>
+        <li class="sep" role="separator"></li>
+        <li><button class="pane" data-pane="dock">
+          <span class="pane-icon dock" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="1.5" y="2.5" width="13" height="11" rx="1.6"/><path d="M4 11h8"/></svg>
+          </span>
+          Desktop &amp; Dock
+        </button></li>
+        <li><button class="pane" data-pane="displays">
+          <span class="pane-icon displays" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="2" y="3" width="12" height="8" rx="1"/><path d="M6 13.5h4M8 11v2.5"/></svg>
+          </span>
+          Displays
+        </button></li>
+        <li><button class="pane" data-pane="wallpaper">
+          <span class="pane-icon wallpaper" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="1.5" y="2.5" width="13" height="11" rx="1.6"/><path d="M2 12l4-4 3 3 2-2 3 3"/><circle cx="11" cy="5.5" r="1.2"/></svg>
+          </span>
+          Wallpaper
+        </button></li>
+        <li><button class="pane" data-pane="screenshots">
+          <span class="pane-icon screenshots" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><path d="M2 5V3.2C2 2.5 2.5 2 3.2 2H5M11 2h1.8c.7 0 1.2.5 1.2 1.2V5M14 11v1.8c0 .7-.5 1.2-1.2 1.2H11M5 14H3.2C2.5 14 2 13.5 2 12.8V11"/><circle cx="8" cy="8" r="2.2"/></svg>
+          </span>
+          Screenshots
+        </button></li>
+        <li><button class="pane" data-pane="sharing">
+          <span class="pane-icon sharing" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="1.5" y="3" width="13" height="8.5" rx="1.4"/><path d="M5.5 14h5M8 11.5V14M8 9V5.5M6.3 7.2 8 5.5l1.7 1.7"/></svg>
+          </span>
+          Screen Sharing
+        </button></li>
+        <li class="sep" role="separator"></li>
+        <li><button class="pane" data-pane="lock">
+          <span class="pane-icon lock" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>
+          </span>
+          Lock Screen
+        </button></li>
+        <li><button class="pane" data-pane="users">
+          <span class="pane-icon users" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="5.6" r="2.8"/><path d="M2.8 14a5.2 5.2 0 0 1 10.4 0"/></svg>
+          </span>
+          Users &amp; Login
+        </button></li>
+        <li class="sep" role="separator"></li>
+        <li><button class="pane" data-pane="input">
+          <span class="pane-icon input" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="1.2" y="4" width="13.6" height="8" rx="1.6"/><path d="M3.6 6.4h.8M6 6.4h.8M8.4 6.4h.8M10.8 6.4h.8M4.4 9.6h7.2"/></svg>
+          </span>
+          Mouse &amp; Keyboard
+        </button></li>
+        <li><button class="pane" data-pane="keys">
+          <span class="pane-icon keyboard" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><rect x="1.2" y="4" width="13.6" height="8" rx="1.6"/><path d="M3.6 6.4h.8M6 6.4h.8M8.4 6.4h.8M10.8 6.4h.8M4.4 9.6h7.2"/></svg>
+          </span>
+          Keyboard Shortcuts
+        </button></li>
+      </ul>
+    </nav>
+
+    <!-- 12a: NetworkManager (src-tauri/src/network.rs). -->
+    <main class="content" id="pane-network" hidden>
+      <header class="head" data-drag>
+        <h1>Network</h1>
+        <p class="sub">Wi-Fi and Ethernet, through NetworkManager. The network icon in the menu bar has the same.</p>
+      </header>
+      <div id="net-devices"></div>
+      <h2 class="group-title" id="net-other-title">Networks</h2>
+      <section class="card" id="net-networks"></section>
+      <h2 class="group-title">Known Networks</h2>
+      <section class="card" id="net-known"></section>
+      <p id="net-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 13d: which status items the menu bar shows (src-tauri/src/menubar.rs, web/menubar.js). -->
+    <main class="content" id="pane-control" hidden>
+      <header class="head" data-drag>
+        <h1>Control Center</h1>
+        <p class="sub">Control Center in the menu bar always has Wi-Fi, Bluetooth, Sound and the rest. Choose which also get their own icon in the menu bar.</p>
+      </header>
+      <h2 class="group-title">Menu bar</h2>
+      <section class="card">
+        <div class="row"><span class="row-label" id="cc-network-label">Network<span class="hint">Wi-Fi or Ethernet. When active: with Wi-Fi, or when not connected.</span></span><select id="cc-network" class="select cc-select" data-item="network" aria-labelledby="cc-network-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
+        <div class="row"><span class="row-label" id="cc-bluetooth-label">Bluetooth<span class="hint">When active: while a device is connected.</span></span><select id="cc-bluetooth" class="select cc-select" data-item="bluetooth" aria-labelledby="cc-bluetooth-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
+        <div class="row"><span class="row-label" id="cc-sound-label">Sound<span class="hint">When active: while something plays, or the sound is muted.</span></span><select id="cc-sound" class="select cc-select" data-item="sound" aria-labelledby="cc-sound-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
+        <div class="row"><span class="row-label" id="cc-input-label">Keyboard layout<span class="hint">When active: with two layouts or more.</span></span><select id="cc-input" class="select cc-select" data-item="input" aria-labelledby="cc-input-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
+        <div class="row"><span class="row-label" id="cc-spaces-label">Desktops<span class="hint">When active: away from Desktop 1, or with windows on other desktops.</span></span><select id="cc-spaces" class="select cc-select" data-item="spaces" aria-labelledby="cc-spaces-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
+        <div class="row"><span class="row-label" id="cc-spotlight-label">Spotlight<span class="hint">Also with its shortcut.</span></span><select id="cc-spotlight" class="select cc-select" data-item="spotlight" aria-labelledby="cc-spotlight-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
+      </section>
+      <p class="note-text">If the menu bar runs out of room, Desktops, Spotlight, Keyboard layout, Sound, Bluetooth and Network fold away in that order. Screen sharing, the microphone dot and Do Not Disturb show while they're on.</p>
+      <p id="cc-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12j: this computer (src-tauri/src/system.rs about_state). -->
+    <main class="content" id="pane-about" hidden>
+      <header class="head ab-head" data-drag>
+        <span class="ab-computer" aria-hidden="true">
+          <svg viewBox="0 0 64 48" width="88" height="66"><rect x="4" y="3" width="56" height="35" rx="3"/><rect x="8" y="7" width="48" height="27" rx="1" class="ab-screen"/><path d="M26 38l-2 6h16l-2-6M20 44.5h24"/></svg>
+        </span>
+        <h1 id="ab-name">About</h1>
+        <p class="sub" id="ab-model"></p>
+      </header>
+      <section class="card" id="ab-facts"></section>
+      <p class="note-text" id="ab-note"></p>
+      <p id="ab-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12j: mimeapps.list defaults (src-tauri/src/defaults.rs) and kompact's `terminal`. -->
+    <main class="content" id="pane-defaults" hidden>
+      <header class="head" data-drag>
+        <h1>Default Apps</h1>
+        <p class="sub">The apps that open links, email addresses and folders, and the terminal the Open a terminal shortcut starts.</p>
+      </header>
+      <section class="card">
+        <div class="row"><img class="df-icon" id="df-browser-icon" alt=""><span class="row-label" id="df-browser-label">Web browser<span class="hint">Opens links from other apps.</span></span><select id="df-browser" class="select df-select" data-role="browser" aria-labelledby="df-browser-label"></select></div>
+        <div class="row"><img class="df-icon" id="df-mail-icon" alt=""><span class="row-label" id="df-mail-label">Email<span class="hint">Opens email addresses (mailto: links).</span></span><select id="df-mail" class="select df-select" data-role="mail" aria-labelledby="df-mail-label"></select></div>
+        <div class="row"><img class="df-icon" id="df-files-icon" alt=""><span class="row-label" id="df-files-label">Files<span class="hint">Opens folders, and your home folder with its shortcut.</span></span><select id="df-files" class="select df-select" data-role="files" aria-labelledby="df-files-label"></select></div>
+        <div class="row"><img class="df-icon" id="df-terminal-icon" alt=""><span class="row-label" id="df-terminal-label">Terminal<span class="hint" id="df-terminal-hint">Starts with the Open a terminal shortcut.</span></span><select id="df-terminal" class="select df-select" data-role="terminal" aria-labelledby="df-terminal-label"></select></div>
+      </section>
+      <p class="note-text">Saved in ~/.config/mimeapps.list (the terminal in kompact's settings). Apps already running may keep the old choice until they restart.</p>
+      <p id="df-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 14b: your name and picture (AccountsService), and the lock page's look (src-tauri/src/users.rs). -->
+    <main class="content" id="pane-users" hidden>
+      <header class="head us-head" data-drag>
+        <span class="us-picture" id="us-picture" aria-hidden="true"></span>
+        <div>
+          <h1 id="us-name">You</h1>
+          <p class="sub" id="us-login"></p>
+        </div>
+      </header>
+      <section class="card">
+        <div class="row"><label class="row-label" for="us-fullname">Full name<span class="hint">On the lock and login screens.</span></label><input id="us-fullname" class="text-field" type="text" maxlength="64" autocomplete="off" spellcheck="false"></div>
+        <div class="row"><span class="row-label">Picture<span class="hint">Up to 1 MB; the login screen shows it too.</span></span><button id="us-pick" class="btn">Edit…</button></div>
+      </section>
+      <h2 class="group-title">Lock screen</h2>
+      <section class="card">
+        <div class="row">
+          <span class="row-label" id="us-bg-label">Background</span>
+          <select id="us-bg" class="select" aria-labelledby="us-bg-label">
+            <option value="desktop-blur">Desktop wallpaper, blurred</option>
+            <option value="desktop">Desktop wallpaper</option>
+            <option value="image">A picture of its own</option>
+          </select>
+        </div>
+        <div class="row" id="us-image-row"><span class="row-label">Picture<span class="hint path" id="us-image-path">None chosen</span></span><img id="us-image" class="us-thumb" alt=""><button id="us-image-pick" class="btn">Choose…</button></div>
+        <div class="row"><label class="row-label" for="us-message">Message<span class="hint">Under the time, e.g. "If found, please call …".</span></label><input id="us-message" class="text-field" type="text" maxlength="120" autocomplete="off" placeholder="None"></div>
+        <div class="row"><span class="row-label">See it</span><button id="us-preview" class="btn">Show Lock Screen</button></div>
+      </section>
+      <p class="note-text">The time follows Date &amp; Time (24-hour or not). When to lock is under Lock Screen.</p>
+      <p id="us-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12i-1: kompact's idle lock (`lock-after`) and the apps keeping the screen awake. -->
+    <main class="content" id="pane-lock" hidden>
+      <header class="head" data-drag>
+        <h1>Lock Screen</h1>
+        <p class="sub">Lock the screen by itself when you're away. The Lock Screen shortcut (Keyboard Shortcuts) locks it any time.</p>
+      </header>
+      <section class="card">
+        <div class="row">
+          <span class="row-label" id="lk-after-label">Lock the screen when inactive for<span class="hint" id="lk-after-hint"></span></span>
+          <select id="lk-after" class="select" aria-labelledby="lk-after-label">
+            <option value="0">Never</option>
+            <option value="1">1 minute</option>
+            <option value="2">2 minutes</option>
+            <option value="5">5 minutes</option>
+            <option value="10">10 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="20">20 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+          </select>
+        </div>
+        <div class="row">
+          <span class="row-label" id="lk-off-label">Turn the display off when inactive for<span class="hint">Any key or pointer move turns it on again.</span></span>
+          <select id="lk-off" class="select" aria-labelledby="lk-off-label">
+            <option value="0">Never</option>
+            <option value="1">1 minute</option>
+            <option value="2">2 minutes</option>
+            <option value="5">5 minutes</option>
+            <option value="10">10 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="20">20 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+          </select>
+        </div>
+        <div class="row"><span class="row-label">Kept awake by<span class="hint" id="lk-awake">…</span></span></div>
+        <div class="row"><span class="row-label">Lock the screen now</span><button id="lk-now" class="btn">Lock Screen</button></div>
+      </section>
+      <p class="note-text">An app playing video can keep the screen awake while its window shows; the time counts from when it stops.</p>
+      <p id="lk-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12h-1: where kompact puts the monitors; it snaps a dropped one next to the others. -->
+    <main class="content" id="pane-displays" hidden>
+      <header class="head" data-drag>
+        <h1>Displays</h1>
+        <p class="sub">Drag the displays to match how they stand on your desk. The pointer and windows cross where their edges meet.</p>
+      </header>
+      <section class="card"><div id="ds-stage" class="ds-stage" aria-label="Display arrangement"></div></section>
+      <section class="card" id="ds-list"></section>
+      <section class="card">
+        <label class="row"><span class="row-label">Show the menu bar on every display<span class="hint">Off: only on the main display.</span></span><input id="ds-every" class="switch" type="checkbox" role="switch"></label>
+      </section>
+      <p class="note-text">The main display has the menu bar and the dock (the white strip). Windows move with their display. Resolution and refresh rate can't be changed here.</p>
+      <p id="ds-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12g: systemd-timedated's time zone and automatic time; the menu-bar clock's look. -->
+    <main class="content" id="pane-datetime" hidden>
+      <header class="head" data-drag>
+        <h1>Date &amp; Time</h1>
+        <p class="sub" id="dt-now">…</p>
+      </header>
+      <section class="card">
+        <label class="row"><span class="row-label">Set the time automatically<span class="hint" id="dt-ntp-hint"></span></span><input id="dt-ntp" class="switch" type="checkbox" role="switch"></label>
+        <div class="row"><span class="row-label">Time zone<span class="hint path" id="dt-zone">…</span></span></div>
+        <div class="row"><input id="dt-search" class="search" type="search" placeholder="Change it: search for a city, e.g. Kolkata, London, New York" aria-label="Find a time zone" autocomplete="off"></div>
+        <div id="dt-results"></div>
+      </section>
+      <h2 class="group-title">Menu bar clock</h2>
+      <section class="card">
+        <div class="row"><span class="row-label">Looks like<span class="hint" id="dt-preview"></span></span></div>
+        <label class="row"><span class="row-label">24-hour time</span><input id="dt-24" class="switch" type="checkbox" role="switch"></label>
+        <label class="row"><span class="row-label">Show the day of the week</span><input id="dt-weekday" class="switch" type="checkbox" role="switch"></label>
+        <label class="row"><span class="row-label">Show the date</span><input id="dt-date" class="switch" type="checkbox" role="switch"></label>
+        <label class="row"><span class="row-label">Show seconds</span><input id="dt-seconds" class="switch" type="checkbox" role="switch"></label>
+      </section>
+      <p class="note-text">Changing the time zone or automatic time asks for your password.</p>
+      <p id="dt-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12f: kompact applies these (libinput for the pointer, xkb for the keyboard). -->
+    <main class="content" id="pane-input" hidden>
+      <header class="head" data-drag>
+        <h1>Mouse &amp; Keyboard</h1>
+        <p class="sub">Changes apply at once, to every mouse, touchpad and keyboard.</p>
+      </header>
+      <!-- 13h: the mouse and the touchpad each have their own scrolling direction. -->
+      <h2 class="group-title">Mouse</h2>
+      <section class="card">
+        <div class="row">
+          <span class="row-label">Pointer speed</span>
+          <div class="slider"><span class="end">Slow</span><input id="in-speed" type="range" min="-10" max="10" step="1" aria-label="Pointer speed"><span class="end">Fast</span></div>
+        </div>
+        <label class="row"><span class="row-label">Pointer acceleration<span class="hint">Faster movements go further. Off: the same distance however fast (for games, drawing).</span></span><input id="in-accel" class="switch" type="checkbox" role="switch"></label>
+        <div class="row">
+          <span class="row-label">Scrolling speed<span class="hint">How far one turn of the wheel (or a touchpad swipe) scrolls.</span></span>
+          <div class="slider"><span class="end">Slow</span><input id="in-scroll" type="range" min="25" max="300" step="25" aria-label="Scrolling speed"><span class="end">Fast</span><span id="in-scroll-val" class="val"></span></div>
+        </div>
+        <label class="row"><span class="row-label">Natural scrolling<span class="hint">Off: turning the wheel down moves the page down. On: the other way round.</span></span><input id="in-mnatural" class="switch" type="checkbox" role="switch"></label>
+        <label class="row"><span class="row-label">Left-handed<span class="hint">Swap the left and right buttons.</span></span><input id="in-left" class="switch" type="checkbox" role="switch"></label>
+      </section>
+      <h2 class="group-title">Touchpad</h2>
+      <section class="card">
+        <label class="row"><span class="row-label">Natural scrolling<span class="hint">Content moves the way your fingers do, as on macOS.</span></span><input id="in-natural" class="switch" type="checkbox" role="switch"></label>
+        <label class="row"><span class="row-label">Tap to click<span class="hint">A tap is a click.</span></span><input id="in-tap" class="switch" type="checkbox" role="switch"></label>
+      </section>
+      <h2 class="group-title">Keyboard</h2>
+      <section class="card">
+        <label class="row"><span class="row-label">Key repeat<span class="hint">Holding a key types it again and again.</span></span><input id="in-repeat" class="switch" type="checkbox" role="switch"></label>
+        <div class="row" id="in-delay-row">
+          <span class="row-label">Delay until repeat</span>
+          <div class="slider"><span class="end">Short</span><input id="in-delay" type="range" min="150" max="1000" step="50" aria-label="Delay until repeat"><span class="end">Long</span><span id="in-delay-val" class="val"></span></div>
+        </div>
+        <div class="row" id="in-rate-row">
+          <span class="row-label">Repeat rate</span>
+          <div class="slider"><span class="end">Slow</span><input id="in-rate" type="range" min="5" max="60" step="1" aria-label="Repeat rate"><span class="end">Fast</span><span id="in-rate-val" class="val"></span></div>
+        </div>
+        <div class="row">
+          <span id="in-caps-label" class="row-label">Caps Lock</span>
+          <div id="in-caps" class="segmented" role="radiogroup" aria-labelledby="in-caps-label">
+            <button role="radio" data-caps="normal">Caps Lock</button>
+            <button role="radio" data-caps="escape">Escape</button>
+            <button role="radio" data-caps="ctrl">Ctrl</button>
+            <button role="radio" data-caps="off">Nothing</button>
+          </div>
+        </div>
+        <div class="row"><input id="in-test" class="search" placeholder="Type here to try it" aria-label="Try the keyboard"></div>
+      </section>
+      <h2 class="group-title">Layouts</h2>
+      <section class="card" id="in-layouts"></section>
+      <section class="card">
+        <div class="row"><input id="in-add" class="search" type="search" placeholder="Add a layout: search, e.g. German, Hindi, Dvorak" aria-label="Add a layout" autocomplete="off"></div>
+        <div id="in-results"></div>
+      </section>
+      <p class="note-text" id="in-switch-hint"></p>
+      <p id="in-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12d: the shell's notification server (src-tauri/src/notify.rs). -->
+    <main class="content" id="pane-notifications" hidden>
+      <header class="head" data-drag>
+        <h1>Notifications</h1>
+        <p class="sub">Banners at the top right; all of them stay in the Notification Center (click the clock) until you clear them.</p>
+      </header>
+      <section class="card">
+        <label class="row">
+          <span class="row-label">Do Not Disturb<span class="hint">No banners (urgent ones still show); they wait in the Notification Center. A moon shows in the menu bar.</span></span>
+          <input id="nt-dnd" class="switch" type="checkbox" role="switch">
+        </label>
+        <div class="row">
+          <span id="nt-time-label" class="row-label">Banners stay for</span>
+          <div id="nt-time" class="segmented" role="radiogroup" aria-labelledby="nt-time-label">
+            <button role="radio" data-ms="3000">3 s</button>
+            <button role="radio" data-ms="5000">5 s</button>
+            <button role="radio" data-ms="10000">10 s</button>
+          </div>
+        </div>
+      </section>
+      <h2 class="group-title">Apps</h2>
+      <section class="card" id="nt-apps"></section>
+      <p id="nt-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12c: PipeWire (src-tauri/src/sound.rs). -->
+    <main class="content" id="pane-sound" hidden>
+      <header class="head" data-drag>
+        <h1>Sound</h1>
+        <p class="sub">Where sound goes and comes from, and how loud. The volume keys and the speaker in the menu bar change the output too.</p>
+      </header>
+      <h2 class="group-title">Output</h2>
+      <section class="card">
+        <div class="row">
+          <span class="row-label">Output volume</span>
+          <div class="slider"><span class="end">🔈</span><input id="sd-out-vol" type="range" min="0" max="100" aria-label="Output volume"><span class="end">🔊</span><span id="sd-out-val" class="val"></span></div>
+        </div>
+        <label class="row">
+          <span class="row-label">Mute</span>
+          <input id="sd-out-mute" class="switch" type="checkbox" role="switch">
+        </label>
+      </section>
+      <section class="card" id="sd-outputs"></section>
+      <h2 class="group-title">Input</h2>
+      <section class="card" id="sd-in-card">
+        <div class="row">
+          <span class="row-label">Input volume<span class="hint" id="sd-in-hint"></span></span>
+          <div class="slider"><span class="end">🎙️</span><input id="sd-in-vol" type="range" min="0" max="100" aria-label="Input volume"><span id="sd-in-val" class="val"></span></div>
+        </div>
+        <label class="row">
+          <span class="row-label">Mute the microphone</span>
+          <input id="sd-in-mute" class="switch" type="checkbox" role="switch">
+        </label>
+      </section>
+      <section class="card" id="sd-inputs"></section>
+      <p class="note-text">Keys: change them in Keyboard Shortcuts → Sound.</p>
+      <p id="sd-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 12b: BlueZ (src-tauri/src/bluetooth.rs); pairing questions come from its agent. -->
+    <main class="content" id="pane-bluetooth" hidden>
+      <header class="head" data-drag>
+        <h1>Bluetooth</h1>
+        <p class="sub">Headphones, speakers, keyboards, mice and phones. The Bluetooth icon in the menu bar connects your devices.</p>
+      </header>
+      <section class="card">
+        <label class="row">
+          <span class="row-label">Bluetooth<span class="hint" id="bt-hint"></span></span>
+          <input id="bt-power" class="switch" type="checkbox" role="switch">
+        </label>
+      </section>
+      <h2 class="group-title" id="bt-mine-title">My Devices</h2>
+      <section class="card" id="bt-mine"></section>
+      <h2 class="group-title" id="bt-near-title">Nearby Devices</h2>
+      <section class="card" id="bt-near"></section>
+      <p id="bt-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 10d-3: kompact keeps these (~/.config/kompact/settings) and draws its title bars to match. -->
+    <main class="content" id="pane-appearance" hidden>
+      <header class="head" data-drag>
+        <h1>Appearance</h1>
+        <p class="sub">For the menu bar, Dock, menus, notifications, these settings and the title bars kompact draws.</p>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <span id="look-label" class="row-label">Appearance<span class="hint" id="look-hint">Auto is light from 7:00 to 19:00.</span></span>
+          <div id="look" class="looks" role="radiogroup" aria-labelledby="look-label">
+            <button class="look" role="radio" data-look="light"><span class="look-pic light-pic"></span>Light</button>
+            <button class="look" role="radio" data-look="dark"><span class="look-pic dark-pic"></span>Dark</button>
+            <button class="look" role="radio" data-look="auto"><span class="look-pic auto-pic"></span>Auto</button>
+          </div>
+        </div>
+        <div class="row">
+          <span class="row-label">Accent colour</span>
+          <div id="accents" class="swatches accents" role="radiogroup" aria-label="Accent colour"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row">
+          <span id="buttons-label" class="row-label">Title-bar buttons<span class="hint">Close, minimize and zoom: on the left like macOS, or on the right like Windows.</span></span>
+          <div id="buttons-side" class="segmented" role="radiogroup" aria-labelledby="buttons-label">
+            <button role="radio" data-side="left">Left</button>
+            <button role="radio" data-side="right">Right</button>
+          </div>
+        </div>
+      </section>
+
+      <p class="note-text">Apps that draw their own title bars and colours (Files, Firefox) keep their GTK theme for now.</p>
+      <p id="look-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <main class="content" id="pane-dock" hidden>
+      <header class="head" data-drag>
+        <h1>Desktop &amp; Dock</h1>
+        <p class="sub">Changes apply at once. Right-clicking between the dock's icons changes the same settings.</p>
+      </header>
+
+      <!-- 10d-1b: size and magnification, as macOS's sliders. -->
+      <section class="card" aria-label="Size">
+        <div class="row">
+          <span class="row-label">Size</span>
+          <div class="slider">
+            <span class="end">Small</span>
+            <input id="dock-size" type="range" min="32" max="64" step="2" aria-label="Dock size">
+            <span class="end">Large</span>
+            <span id="dock-size-val" class="val"></span>
+          </div>
+        </div>
+        <label class="row">
+          <span class="row-label">Magnification<span class="hint">Icons grow under the pointer.</span></span>
+          <input id="dock-magnify" class="switch" type="checkbox" role="switch">
+        </label>
+        <div class="row" id="zoom-row">
+          <span class="row-label">Magnified size</span>
+          <div class="slider">
+            <span class="end">Less</span>
+            <input id="dock-zoom" type="range" min="110" max="200" step="5" aria-label="Magnified size">
+            <span class="end">More</span>
+            <span id="dock-zoom-val" class="val"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-label="Position">
+        <div class="row">
+          <span id="pos-label" class="row-label">Position on screen</span>
+          <div id="dock-pos" class="segmented" role="radiogroup" aria-labelledby="pos-label">
+            <button role="radio" data-pos="left">Left</button>
+            <button role="radio" data-pos="bottom">Bottom</button>
+            <button role="radio" data-pos="right">Right</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-label="Hiding">
+        <div class="row">
+          <span id="hide-label" class="row-label">Automatically hide the Dock</span>
+          <div id="dock-hide" class="segmented" role="radiogroup" aria-labelledby="hide-label">
+            <button role="radio" data-hide="smart" title="Hides while the window in front is maximized or full screen">When Maximized</button>
+            <button role="radio" data-hide="always" title="Comes back when the pointer touches the bottom edge">Always</button>
+            <button role="radio" data-hide="never" title="Always shown; windows stay above it">Never</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-label="Behaviour">
+        <label class="row">
+          <span class="row-label">Show indicators for open apps<span class="hint">A dot under each running app, one per window (up to three).</span></span>
+          <input id="dock-dots" class="switch" type="checkbox" role="switch">
+        </label>
+        <label class="row">
+          <span class="row-label">Animate opening apps<span class="hint">An app's icon bounces until its window shows.</span></span>
+          <input id="dock-bounce" class="switch" type="checkbox" role="switch">
+        </label>
+        <label class="row">
+          <span class="row-label">Move to another display<span class="hint">Hold the pointer at that edge of the other monitor and the Dock moves there.</span></span>
+          <input id="dock-follow" class="switch" type="checkbox" role="switch">
+        </label>
+      </section>
+
+      <!-- 11c: kompact's own settings (~/.config/kompact/settings). -->
+      <h2 class="group-title">Windows</h2>
+      <section class="card" aria-label="Windows">
+        <label class="row" id="anim-row">
+          <span class="row-label">Animate windows<span class="hint" id="anim-hint">Minimizing shrinks a window into its Dock icon; maximizing and snapping glide.</span></span>
+          <input id="win-anim" class="switch" type="checkbox" role="switch">
+        </label>
+        <div class="row">
+          <span class="row-label">Double-click a window's title bar to<span class="hint">Title bars kompact draws; apps that draw their own (Files, Firefox) follow theirs.</span></span>
+          <div id="win-dblclick" class="segmented" role="radiogroup" aria-label="Double-click a window's title bar to">
+            <button role="radio" data-dbl="zoom">Zoom</button>
+            <button role="radio" data-dbl="minimize">Minimize</button>
+            <button role="radio" data-dbl="nothing">Do Nothing</button>
+          </div>
+        </div>
+        <label class="row">
+          <span class="row-label">Focus follows the mouse<span class="hint">The window under the pointer gets the keyboard, without coming to the front.</span></span>
+          <input id="win-ffm" class="switch" type="checkbox" role="switch">
+        </label>
+      </section>
+
+      <p id="dock-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 10d-2: the wallpaper (the shell keeps it, ~/.config/kompact/wallpaper). -->
+    <main class="content" id="pane-wallpaper" hidden>
+      <header class="head" data-drag>
+        <h1>Wallpaper</h1>
+        <p class="sub">Shown on every display; the menu bar, Dock and Launchpad take on its colours.</p>
+      </header>
+
+      <section class="card">
+        <div class="row wp-now">
+          <div id="wp-current" class="wp-current" aria-hidden="true"></div>
+          <span class="row-label"><span id="wp-name">…</span><span class="hint" id="wp-hint"></span></span>
+          <button id="wp-choose" class="btn">Choose a Picture…</button>
+        </div>
+      </section>
+
+      <h2 class="group-title">Colours</h2>
+      <section class="card">
+        <div class="row">
+          <div id="wp-colors" class="swatches" role="radiogroup" aria-label="Colours"></div>
+          <label class="custom-color" title="Another colour">
+            <input id="wp-custom" type="color" value="#2c3e50" aria-label="Another colour">
+            <span>Other…</span>
+          </label>
+        </div>
+      </section>
+
+      <h2 class="group-title">Pictures</h2>
+      <div id="wp-pictures" class="pictures" role="radiogroup" aria-label="Pictures"></div>
+      <p id="wp-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 10d-4: kompact takes the screenshots and keeps these (~/.config/kompact/settings). -->
+    <main class="content" id="pane-screenshots" hidden>
+      <header class="head" data-drag>
+        <h1>Screenshots</h1>
+        <p class="sub">Where pictures of the screen go and what they show.</p>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <span class="row-label">Save to<span class="hint path" id="shots-dir">…</span></span>
+          <button id="shots-default" class="link" hidden>Use Default</button>
+          <button id="shots-open" class="btn">Show in Files</button>
+          <button id="shots-choose" class="btn">Choose…</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <label class="row">
+          <span class="row-label">Show "Screenshot saved"<span class="hint">A banner for each picture taken; click it to open the picture.</span></span>
+          <input id="shot-banner" class="switch" type="checkbox" role="switch">
+        </label>
+        <label class="row">
+          <span class="row-label">Include the mouse pointer<span class="hint">Off, as on macOS: the pointer isn't in the picture.</span></span>
+          <input id="shot-pointer" class="switch" type="checkbox" role="switch">
+        </label>
+      </section>
+
+      <section class="card">
+        <div class="row">
+          <span class="row-label">Keys<span class="hint" id="shot-keys">…</span></span>
+          <button id="shot-keys-edit" class="btn">Change…</button>
+        </div>
+      </section>
+      <p id="shots-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 10d-5: xdg-desktop-portal-wlr's settings (~/.config/xdg-desktop-portal-wlr/kompact). -->
+    <main class="content" id="pane-sharing" hidden>
+      <header class="head" data-drag>
+        <h1>Screen Sharing</h1>
+        <p class="sub">When an app (a video call in Firefox, OBS) shares a screen. You click the screen to share; a purple pill in the menu bar shows while it lasts.</p>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <span class="row-label"><span id="share-state">…</span><span class="hint" id="share-hint"></span></span>
+          <button id="share-setup" class="btn primary" hidden>Set Up</button>
+        </div>
+      </section>
+
+      <section class="card" id="share-options">
+        <div class="row">
+          <span id="fps-label" class="row-label">Frame rate<span class="hint">More is smoother, but each frame costs kompact about 17 ms on this graphics card.</span></span>
+          <div id="share-fps" class="segmented" role="radiogroup" aria-labelledby="fps-label"></div>
+        </div>
+      </section>
+      <p id="share-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <main class="content" id="pane-keys" hidden>
+      <header class="head" data-drag>
+        <h1>Keyboard Shortcuts</h1>
+        <p class="sub">Pick the set you're used to, then change any shortcut: click its keys and press new ones.</p>
+      </header>
+
+      <section class="card preset-card" aria-labelledby="preset-label">
+        <div class="row">
+          <span id="preset-label" class="row-label">Shortcut set</span>
+          <div id="presets" class="segmented" role="radiogroup" aria-labelledby="preset-label"></div>
+        </div>
+      </section>
+
+      <div id="groups"></div>
+
+      <section class="card">
+        <div class="row">
+          <span class="row-label muted">Ctrl+Alt+F1–F12 always switch to another console and can't be changed.</span>
+          <button id="restore-all" class="btn">Restore Defaults…</button>
+        </div>
+      </section>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <p id="offline" class="offline" hidden>Waiting for kompact…</p>
+    </main>
+  </div>
+
+  <!-- Asked when switching sets with changes made, and before restoring everything. -->
+  <div id="dialog" class="dialog-back" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+      <h2 id="dlg-title"></h2>
+      <p id="dlg-text"></p>
+      <!-- 12b: a PIN or passkey asked for by a Bluetooth device. -->
+      <input id="dlg-input" class="dlg-input" hidden autocomplete="off">
+      <p id="dlg-code" class="dlg-code" hidden></p>
+      <div id="dlg-buttons" class="dlg-buttons"></div>
+    </div>
+  </div>
+
+  <script src="appearance.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

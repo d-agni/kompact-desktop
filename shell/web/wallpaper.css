@@ -1,0 +1,24 @@
+/* Static on purpose: no animation, so a wallpaper costs kompact no frames once it's drawn.
+   The base colour matches PANEL_BG in src-tauri/src/config.rs (shown before the page paints). */
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: rgb(26, 26, 38);
+  cursor: default;
+  user-select: none;
+}
+#wallpaper {
+  position: fixed;
+  inset: 0;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+#wallpaper.gradient {
+  background-image:
+    radial-gradient(ellipse at 20% 15%, rgba(90, 80, 160, 0.35), transparent 55%),
+    radial-gradient(ellipse at 85% 90%, rgba(40, 110, 140, 0.30), transparent 60%),
+    linear-gradient(160deg, rgb(26, 26, 38), rgb(18, 20, 30));
+}

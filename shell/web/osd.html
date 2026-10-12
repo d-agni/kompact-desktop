@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>kompact level</title>
+  <link rel="stylesheet" href="osd.css">
+</head>
+<body>
+  <!-- 12c: the volume level after a volume key, like macOS's. -->
+  <div id="osd" class="osd" role="status" aria-live="polite">
+    <svg id="osd-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path class="body" d="M4 9h3.5L12 5v14l-4.5-4H4z"/>
+      <path class="w1" d="M14.5 9.5a3.5 3.5 0 0 1 0 5"/>
+      <path class="w2" d="M16.8 7.2a6.8 6.8 0 0 1 0 9.6"/>
+      <path class="w3" d="M19 5a10 10 0 0 1 0 14"/>
+      <path class="slash" d="M15 9l6 6M21 9l-6 6"/>
+      <g class="mic"><rect x="9.5" y="3.5" width="5" height="10" rx="2.5"/><path d="M6.5 11a5.5 5.5 0 0 0 11 0M12 16.5V20"/></g>
+    </svg>
+    <div id="osd-bar" class="bar"></div>
+  </div>
+  <script src="appearance.js"></script>
+  <script src="osd.js"></script>
+</body>
+</html>

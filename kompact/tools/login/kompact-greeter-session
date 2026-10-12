@@ -1,0 +1,8 @@
+#!/bin/sh
+# 14d: the login screen, as greetd starts it (as its own user, _greetd; installed as
+# /usr/local/bin/kompact-greeter-session by tools/install-login.sh): kompact in greeter mode
+# showing only kompact-greeter. Log: /var/lib/greetd/kompact-greeter.log (the run before *.old).
+log="${HOME:-/var/lib/greetd}/kompact-greeter.log"
+[ -f "$log" ] && mv -f "$log" "$log.old"
+export RUST_LOG="${RUST_LOG:-info}"
+exec /usr/local/bin/kompact --backend drm --greeter /usr/local/bin/kompact-greeter >"$log" 2>&1

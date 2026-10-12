@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>kompact panel</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div id="bar" class="panel">
+    <button id="logo" class="item logo" title="kompact menu" aria-label="kompact menu">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.2 14.2 4.8v6.4L8 14.8 1.8 11.2V4.8z"/><path class="cut" d="M6.2 4.6v6.8M6.2 8.2 9.8 4.6M7.4 7.2l2.6 4.2"/></svg>
+    </button>
+    <!-- 13c: the launcher right after the logo menu, then the app name. -->
+    <button id="apps" class="item" title="Launchpad" aria-label="Launchpad">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <rect x="1" y="1" width="6" height="6" rx="1.6"/><rect x="9" y="1" width="6" height="6" rx="1.6"/>
+        <rect x="1" y="9" width="6" height="6" rx="1.6"/><rect x="9" y="9" width="6" height="6" rx="1.6"/>
+      </svg>
+    </button>
+    <span id="app" class="item brand">kompact</span>
+    <span class="spacer"></span>
+    <!-- 13d: status items, macOS order; which show is menubar.js's (Settings → Control Center). -->
+    <!-- 9e-c: shown while kompact's screen is being shared or recorded. -->
+    <span id="sharing" class="item sharing" hidden role="status" aria-label="Screen sharing">
+      <span class="sharing-pill">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" class="stroke">
+          <rect x="1.5" y="2.5" width="13" height="9" rx="1.6"/><path d="M5.5 14h5M8 11.5V14"/>
+        </svg>
+      </span>
+    </span>
+    <!-- 12d: an app is recording from the microphone (macOS's orange dot). -->
+    <span id="mic-use" class="item mic-use" hidden role="status" aria-label="Microphone in use"><span class="mic-dot"></span></span>
+    <!-- 12f: the keyboard layout (only with two or more): its short name; click for the list. -->
+    <button id="input" class="item input" hidden title="Keyboard layout" aria-label="Keyboard layout"><span id="input-code"></span></button>
+    <!-- 12b: Bluetooth (hidden without an adapter; dim when off). -->
+    <button id="bt" class="item bt" title="Bluetooth" aria-label="Bluetooth" hidden>
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" class="stroke"><path d="M4.5 5 11 10.8 8 13.6V2.4l3 2.8L4.5 11"/></svg>
+    </button>
+    <!-- 12c: sound: the speaker with 0–3 waves (a slash when muted). -->
+    <button id="sound" class="item sound" title="Sound" aria-label="Sound" hidden>
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <path class="body" d="M4 9h3.5L12 5v14l-4.5-4H4z"/>
+        <path class="w w1" d="M14.5 9.5a3.5 3.5 0 0 1 0 5"/>
+        <path class="w w2" d="M16.8 7.2a6.8 6.8 0 0 1 0 9.6"/>
+        <path class="w w3" d="M19 5a10 10 0 0 1 0 14"/>
+        <path class="w slash" d="M15 9l6 6M21 9l-6 6"/>
+      </svg>
+    </button>
+    <!-- 12a: network (Ethernet / Wi-Fi bars / off); its menu is in the overlay. -->
+    <button id="net" class="item net" title="Network" aria-label="Network" hidden>
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" class="net-wifi">
+        <path class="b0" d="M8 13.2l1.6-1.9a2.4 2.4 0 0 0-3.2 0z"/>
+        <path class="b1" d="M4.6 9.2a5.2 5.2 0 0 1 6.8 0l-1 1.2a3.6 3.6 0 0 0-4.8 0z"/>
+        <path class="b2" d="M2.4 6.6a8.6 8.6 0 0 1 11.2 0l-1 1.2a7 7 0 0 0-9.2 0z"/>
+        <path class="slash" d="M3 2.5l10 11"/>
+      </svg>
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" class="net-wired stroke">
+        <path d="M5 4.5 1.8 8 5 11.5M11 4.5 14.2 8 11 11.5"/><circle cx="6" cy="8" r="0.6"/><circle cx="8" cy="8" r="0.6"/><circle cx="10" cy="8" r="0.6"/>
+      </svg>
+    </button>
+    <!-- 6e: the current workspace; click for all of them. -->
+    <button id="spaces" class="item spaces" hidden title="Desktops" aria-label="Desktop 1, show all desktops">
+      <span class="space-icon"><span id="space-num">1</span></span>
+    </button>
+    <button id="spotlight" class="item" title="Spotlight" aria-label="Spotlight">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" class="stroke">
+        <circle cx="6.6" cy="6.6" r="4.8"/><path d="m10.3 10.3 4.2 4.2"/>
+      </svg>
+    </button>
+    <!-- 12d: Do Not Disturb is on. -->
+    <span id="dnd" class="item dnd" hidden title="Do Not Disturb" aria-label="Do Not Disturb is on">
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M10.5 2.2a6 6 0 1 0 3.3 9.6A5 5 0 0 1 10.5 2.2z"/></svg>
+    </span>
+    <!-- 12d: Control Center (Wi-Fi, Bluetooth, Do Not Disturb, Dark Mode, sound). -->
+    <button id="control" class="item" title="Control Center" aria-label="Control Center">
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" class="stroke">
+        <rect x="1.5" y="3" width="13" height="4" rx="2"/><circle cx="11.5" cy="5" r="1"/>
+        <rect x="1.5" y="9" width="13" height="4" rx="2"/><circle cx="4.5" cy="11" r="1"/>
+      </svg>
+    </button>
+    <!-- 12d: the clock opens the Notification Center (the date, a month, the notifications). -->
+    <button id="clock-btn" class="item clock" title="Notification Center" aria-label="Notification Center"><time id="clock"></time></button>
+  </div>
+  <script src="appearance.js"></script>
+  <script src="vibrancy.js"></script>
+  <script src="menubar.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

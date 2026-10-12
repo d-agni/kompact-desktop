@@ -1,0 +1,51 @@
+[package]
+name = "kompact"
+version = "0.1.1"
+edition = "2021"
+rust-version = "1.85"
+description = "Minimal Wayland compositor. Winit backend for nested/VM use, DRM/KMS backend for bare metal."
+license = "MIT"
+
+[[bin]]
+name = "kompact"
+path = "src/main.rs"
+
+[dependencies]
+smithay = { version = "0.4", default-features = false, features = [
+    "backend_winit",
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "backend_egl",
+    "renderer_gl",
+    "wayland_frontend",
+    "desktop",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+# 6p-b: SIGTERM handler (src/quit_signal.rs); already in the tree through errno/libseat.
+libc = "0.2"
+# 6m-e7: window titles in kompact's title bar (src/title_text.rs); pure Rust, variable fonts.
+ab_glyph = "0.2"
+# 9a: screenshots as PNG files (src/screenshot.rs); pure Rust.
+png = "0.17"
+
+[profile.release]
+opt-level = "z"       # optimize for size
+lto = true             # link-time optimization across the whole dependency graph
+codegen-units = 1       # single codegen unit -> smaller, slower-to-build binary
+panic = "abort"        # drop unwinding tables entirely
+strip = "symbols"       # strip debug symbols from the final binary
+
+[profile.release.package."*"]
+opt-level = "z"
+
+# Optional even-smaller profile: build with `cargo build --profile min`
+# Drops panic messages/formatting machinery too (needs nightly build-std to go further).
+[profile.min]
+inherits = "release"
+opt-level = "z"

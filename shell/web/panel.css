@@ -1,0 +1,165 @@
+/* macOS-style menu bar: 28 px high (PANEL_HEIGHT in src-tauri/src/config.rs). Over a wallpaper
+   image it shows the shell's blurred copy of it (vibrancy.js) under a dark tint, like frosted
+   glass; over the gradient it is a plain see-through tint. */
+:root {
+  --tint: rgba(22, 22, 32, 0.55);
+  --tint-vibrant: rgba(18, 18, 26, 0.38);
+  --fg: #f2f2f7;
+  --hover: rgba(255, 255, 255, 0.16);
+  --pressed: rgba(255, 255, 255, 0.26);
+}
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: var(--fg);
+  font: 13px/1 -apple-system, "SF Pro Text", "Inter", "Cantarell", system-ui, sans-serif;
+  cursor: default;
+  user-select: none;
+}
+#bar { height: 100%; }
+#bar.vibrant { box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06); }
+.panel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+}
+/* The tint goes on top of the (optional) blurred image, under the items. */
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--tint);
+  z-index: -1;
+}
+.panel.vibrant::before { background: var(--tint-vibrant); }
+.panel { isolation: isolate; }
+.item {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 5px;
+}
+.logo { padding: 0 8px 0 6px; }
+.logo svg { fill: currentColor; }
+button.item.logo svg { fill: currentColor; }
+.logo .cut { fill: none; stroke: rgb(30, 30, 40); stroke-width: 1.5; stroke-linecap: round; }
+.brand { font-weight: 700; padding-left: 4px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 13d: items keep their size; a long app name gives way first (then menubar.js folds items). */
+.item { flex-shrink: 0; }
+.item.brand { flex-shrink: 1; min-width: 48px; display: block; line-height: 22px; }
+.spacer { flex: 1; }
+#clock { font-variant-numeric: tabular-nums; }
+button.item {
+  border: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+button.item:hover { background: var(--hover); }
+button.item:active { background: var(--pressed); }
+button.item svg { fill: currentColor; }
+button.item svg.stroke { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+
+/* 9e-c: screen sharing, like macOS's purple screen-recording pill. */
+.sharing { padding: 0 4px; }
+.sharing[hidden] { display: none; }
+.sharing-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: #a550e0;
+  color: #fff;
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.25);
+}
+.sharing-pill svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+
+/* 6e: the current workspace, as a small screen with its number; click for all of them. */
+.spaces { padding: 0 7px; }
+.space-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 20px;
+  height: 15px;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+  font: 700 9.5px/1 -apple-system, "SF Pro Text", "Inter", "Cantarell", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 10d-3: light appearance (appearance.js sets data-theme), like macOS's light menu bar. */
+:root[data-theme="light"] {
+  --tint: rgba(246, 246, 248, 0.66);
+  --tint-vibrant: rgba(255, 255, 255, 0.45);
+  --fg: #1d1d1f;
+  --hover: rgba(0, 0, 0, 0.09);
+  --pressed: rgba(0, 0, 0, 0.16);
+}
+:root[data-theme="light"] .panel { text-shadow: none; }
+:root[data-theme="light"] #bar.vibrant { box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.08); }
+:root[data-theme="light"] .logo .cut { stroke: rgb(240, 240, 244); }
+
+/* 12a: the network item. Wi-Fi: dim bars beyond the strength; off: a slash; wired: </>. */
+.net[hidden] { display: none; }
+.net { padding: 0 6px; }
+.net svg { display: none; }
+.net[data-icon="wifi"] .net-wifi, .net[data-icon="none"] .net-wifi, .net[data-icon="off"] .net-wifi, .net[data-icon="connecting"] .net-wifi { display: block; }
+.net[data-icon="ethernet"] .net-wired { display: block; }
+.net .net-wifi path { fill: currentColor; }
+.net .net-wifi .slash { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; display: none; }
+.net[data-icon="off"] .slash { display: block; }
+.net[data-icon="off"] .net-wifi path:not(.slash), .net[data-icon="none"] .net-wifi path { opacity: 0.3; }
+.net[data-bars="0"][data-icon="wifi"] .b1, .net[data-bars="0"][data-icon="wifi"] .b2, .net[data-bars="1"][data-icon="wifi"] .b2 { opacity: 0.3; }
+.net[data-icon="connecting"] .net-wifi path { animation: net-pulse 1.2s ease-in-out infinite; }
+@keyframes net-pulse { 50% { opacity: 0.3; } }
+.net .net-wired circle { fill: currentColor; }
+
+/* 12b: Bluetooth: dim when off, a dot under it while a device is connected. */
+.bt[hidden] { display: none; }
+.bt { padding: 0 6px; position: relative; }
+.bt[data-state="off"] svg { opacity: 0.4; }
+.bt[data-state="connected"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 3px;
+  height: 3px;
+  margin-left: -1.5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 12c: sound. */
+.sound[hidden] { display: none; }
+.sound { padding: 0 5px; }
+.sound .body { fill: currentColor; }
+.sound .w { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.sound .slash { display: none; }
+.sound[data-waves="0"] .w1, .sound[data-waves="0"] .w2, .sound[data-waves="0"] .w3,
+.sound[data-waves="1"] .w2, .sound[data-waves="1"] .w3,
+.sound[data-waves="2"] .w3 { display: none; }
+.sound[data-muted="true"] .slash { display: inline; }
+
+/* 12d: the clock as a button, Do Not Disturb's moon, the microphone-in-use dot. */
+button.item.clock { padding: 0 8px; }
+.dnd[hidden], .mic-use[hidden] { display: none; }
+.dnd svg { fill: currentColor; }
+.mic-use { padding: 0 4px; }
+.mic-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff9f0a; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25); }
+
+/* 12f: the input switcher. */
+.input[hidden] { display: none; }
+.input span { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; padding: 1px 4px; border: 1.2px solid currentColor; border-radius: 4px; }

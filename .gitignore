@@ -1,0 +1,32 @@
+# Build output
+target/
+/dist/
+
+# Rollback builds kept during hardware tests (large binaries; rebuild from a tag instead)
+rollback/
+
+# Test-run logs and captures
+*.log
+*.log.old
+kompact/screenlog/
+kompact/snap-shell/
+kompact/Error.png
+kompact/SHORTCUTS-TEST.txt
+
+# Downloaded packages
+*.deb
+
+# No Cargo.lock is committed (a fresh resolve picks the dependency versions; see CLAUDE.md)
+Cargo.lock
+
+# Python, editors, OS
+__pycache__/
+*.pyc
+*.swp
+*~
+.vscode/
+.idea/
+.DS_Store
+
+# Third-party artwork in the archived GTK shell (not ours to relicense)
+attic/shell-gtk4/wallpaper/*.png

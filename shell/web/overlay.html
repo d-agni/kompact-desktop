@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>kompact overlay</title>
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+  <!-- Launchpad: full-screen grid of apps over the blurred wallpaper. -->
+  <section id="launchpad" hidden>
+    <div class="lp-top">
+      <input id="lp-search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search applications">
+    </div>
+    <div class="lp-scroll">
+      <ul id="lp-grid" role="listbox" aria-label="Applications"></ul>
+      <div id="lp-empty" hidden>No Results</div>
+    </div>
+  </section>
+
+  <!-- Spotlight: a search bar in the upper middle of the screen; the rest stays see-through. -->
+  <section id="spotlight" hidden>
+    <div id="sp-box" role="dialog" aria-label="Spotlight Search">
+      <div class="sp-field">
+        <svg viewBox="0 0 16 16" width="22" height="22" aria-hidden="true"><circle cx="6.6" cy="6.6" r="4.8"/><path d="m10.3 10.3 4.2 4.2"/></svg>
+        <input id="sp-search" type="text" placeholder="Spotlight Search" autocomplete="off" spellcheck="false" aria-label="Spotlight Search">
+      </div>
+      <div id="sp-results" hidden></div>
+    </div>
+  </section>
+
+  <!-- The logo menu (6m-b), and the About and confirm dialogs it opens. -->
+  <section id="menu" hidden>
+    <ul id="mn-list" class="menu" role="menu" aria-label="kompact">
+      <li role="menuitem" data-act="about">About kompact</li>
+      <li class="sep" role="separator"></li>
+      <li role="menuitem" data-act="settings">System Settings…</li>
+      <li class="sep" role="separator"></li>
+      <li role="menuitem" data-act="launchpad">Launchpad</li>
+      <li role="menuitem" data-act="spotlight">Spotlight</li>
+      <li class="sep" role="separator"></li>
+      <li role="menuitem" data-act="restart-shell">Restart Shell</li>
+      <li class="sep" role="separator"></li>
+      <!-- 12i-2: only with KOMPACT_SLEEP=on (power_options). -->
+      <li role="menuitem" data-act="sleep" id="mn-sleep" class="disabled" hidden>Sleep</li>
+      <li role="menuitem" data-act="restart">Restart…</li>
+      <li role="menuitem" data-act="shutdown">Shut Down…</li>
+      <li class="sep" role="separator"></li>
+      <li role="menuitem" data-act="lock">Lock Screen</li>
+      <li role="menuitem" data-act="logout">Log Out…</li>
+    </ul>
+
+    <div id="mn-about" class="dialog about" role="dialog" aria-label="About kompact" hidden>
+      <svg class="about-logo" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2 14.2 4.8v6.4L8 14.8 1.8 11.2V4.8z"/><path class="cut" d="M6.2 4.6v6.8M6.2 8.2 9.8 4.6M7.4 7.2l2.6 4.2"/></svg>
+      <h1>kompact</h1>
+      <p id="ab-version" class="dim"></p>
+      <dl id="ab-facts"></dl>
+      <p class="dim small">A Wayland desktop on Smithay and Tauri.</p>
+      <div class="buttons"><button class="btn default" data-act="close">OK</button></div>
+    </div>
+
+    <div id="mn-confirm" class="dialog confirm" role="alertdialog" hidden>
+      <svg class="confirm-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6.5v7M12 16.5v.5"/></svg>
+      <h2 id="cf-title"></h2>
+      <p id="cf-text" class="small"></p>
+      <p id="cf-error" class="error small" hidden></p>
+      <div class="buttons">
+        <button class="btn" data-act="close">Cancel</button>
+        <button id="cf-ok" class="btn default" data-act="confirm"></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- A dock icon's right-click menu (6m-d), above the icon. -->
+  <section id="dockmenu" hidden>
+    <ul id="dm-list" class="menu dock-menu" role="menu"></ul>
+  </section>
+
+  <!-- 12e: polkit's password dialog (an app asks for an administrator action). -->
+  <section id="auth" hidden>
+    <form id="au-box" class="dialog auth" role="dialog" aria-labelledby="au-title">
+      <svg class="auth-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>
+      <h2 id="au-title">Authentication Required</h2>
+      <p id="au-text" class="small"></p>
+      <p id="au-user" class="dim small"></p>
+      <input id="au-pass" type="password" placeholder="Password" autocomplete="off" aria-label="Password">
+      <p id="au-error" class="error small" hidden></p>
+      <p id="au-action" class="dim small au-action"></p>
+      <div class="buttons">
+        <button type="button" class="btn" id="au-cancel">Cancel</button>
+        <button type="submit" class="btn default" id="au-ok">Authenticate</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- 12a: a menu-bar status item's menu (network; later Bluetooth, sound, Control Center). -->
+  <section id="status" hidden>
+    <div id="st-menu" class="menu status-menu" role="menu"></div>
+  </section>
+
+  <!-- 6e: every workspace as a miniature, from the panel's workspace icon. -->
+  <section id="spaces" hidden>
+    <div id="ws-box" role="dialog" aria-label="Desktops">
+      <div id="ws-grid" role="listbox" aria-label="Desktops"></div>
+    </div>
+  </section>
+
+  <!-- 9c: Shift+Print: drag out the region to save as a screenshot; Esc cancels. -->
+  <section id="select" hidden>
+    <div id="sel-rect" hidden><span id="sel-size"></span></div>
+  </section>
+
+  <script src="appearance.js"></script>
+  <script src="vibrancy.js"></script>
+  <script src="overlay.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+[package]
+name = "layer-test"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Minimal wlr-layer-shell client for exercising kompact's layer-shell support"
+
+[[bin]]
+name = "layer-test"
+path = "src/main.rs"
+
+[dependencies]
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
