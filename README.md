@@ -4,6 +4,8 @@ A Wayland desktop for Linux, written from scratch: a compositor (**kompact**) an
 shell on top of it (**kompact-shell**: menu bar, dock, Spotlight, System Settings, lock and login
 screens).
 
+![The kompact desktop: menu bar, dock, and previews of minimized windows](images/main_page.png)
+
 It started as a curiosity: *can an AI build something as complex as a desktop, if a person only
 plans and tests?* Every line of code in this repository was written by
 [Claude](https://claude.ai) (Anthropic's AI) working in Claude Code. The project's owner wrote no
@@ -25,16 +27,30 @@ and what didn't. More on how that worked [below](#how-it-was-built).
 
 ## Screenshots
 
-| | |
-|---|---|
-| ![The desktop with the dock's window previews](images/main_page.png) | ![Control Center](images/control_center.png) |
-| The desktop: menu bar, dock, window previews of minimized windows | Control Center |
-| ![The calendar and Notification Center](images/calendar.png) | ![Workspaces overview](images/workspace.png) |
-| Calendar and notifications, from the clock | Workspaces overview |
-| ![Firefox in kompact, taking a region screenshot](images/firefox_window.png) | ![The logo menu over Files and Firefox](images/menus.png) |
-| Firefox, with a region screenshot being taken | The logo menu, with Files and Firefox |
-| ![System Settings, About](images/settings_application.png) | |
-| System Settings → About | |
+**Control Center**, from the menu bar: Wi-Fi, Bluetooth, Do Not Disturb, Dark Mode and sound.
+
+![Control Center](images/control_center.png)
+
+**Calendar and notifications**, from the clock.
+
+![The calendar and Notification Center](images/calendar.png)
+
+**Workspaces overview**: every desktop at a glance; click one to go there.
+
+![Workspaces overview](images/workspace.png)
+
+**Apps:** Firefox with kompact's region screenshot tool.
+
+![Firefox in kompact, taking a region screenshot](images/firefox_window.png)
+
+**The logo menu**, over Files and Firefox: System Settings, Launchpad, Spotlight, restart,
+lock and log out.
+
+![The logo menu over Files and Firefox](images/menus.png)
+
+**System Settings**, here the About pane with the compositor's and the shell's versions.
+
+![System Settings, About](images/settings_application.png)
 
 ## The two parts
 
