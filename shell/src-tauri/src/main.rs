@@ -26,6 +26,7 @@ mod defaults;
 mod dock;
 mod keyboard;
 mod login_prefs;
+mod media;
 mod menubar;
 mod memstats;
 mod network;
@@ -214,6 +215,10 @@ fn main() {
             sound::sound_volume,
             sound::sound_mute,
             sound::sound_default,
+            media::media_state,
+            media::media_control,
+            screensaver::keep_awake_state,
+            screensaver::set_keep_awake,
             sound::osd_state,
             sound::osd_hide,
             polkit::polkit_request,
@@ -250,6 +255,7 @@ fn main() {
         .register_uri_scheme_protocol(config::ICON_SCHEME, |ctx, request| {
             serve_icon(&ctx.app_handle().state::<Overlay>(), request.uri().path())
         })
+        .register_uri_scheme_protocol(media::ART_SCHEME, |_ctx, request| serve_art(request.uri().path()))
         .setup(move |app| {
             if !gtk_layer_shell::is_supported() {
                 error!("the compositor doesn't offer wlr-layer-shell (is this running inside kompact?)");
@@ -262,6 +268,8 @@ fn main() {
             bluetooth::start(app.handle().clone());
             // 12c: PipeWire's changes → kompact-sound-changed.
             sound::start(app.handle().clone());
+            // 18a: the media players' changes → kompact-media-changed.
+            media::start(app.handle().clone());
             // 12e: our polkit authentication agent for this session.
             polkit::start(app.handle().clone());
             // 12i-2: lock the screen before the computer sleeps.
@@ -767,6 +775,18 @@ fn serve_icon(overlay: &Overlay, path: &str) -> tauri::http::Response<Vec<u8>> {
             not_found()
         }
     }
+}
+
+/// 18a: `kompact-art://localhost/<n>`, a cover a media player named (`media::art_file`).
+fn serve_art(path: &str) -> tauri::http::Response<Vec<u8>> {
+    let not_found = || tauri::http::Response::builder().status(404).body(Vec::new()).unwrap_or_default();
+    let Some(file) = media::art_file(path) else { return not_found() };
+    let Ok(bytes) = std::fs::read(&file) else { return not_found() };
+    let Some(mime) = config::image_mime(&file).or_else(|| config::sniff_mime(&bytes)) else { return not_found() };
+    tauri::http::Response::builder()
+        .header(tauri::http::header::CONTENT_TYPE, mime)
+        .body(bytes)
+        .unwrap_or_else(|_| not_found())
 }
 
 /// `kompact-thumb://localhost/<window id>` (6m-d3); any query (`?v=…`) is ignored.

@@ -27,7 +27,12 @@ struct Hold {
 pub struct Holds {
     next: u32,
     holds: Vec<Hold>,
+    /// 18c: Control Center → Keep Awake (until it's turned off or the shell restarts).
+    pub manual: bool,
 }
+
+/// 18c: who holds it when Keep Awake is on.
+pub const MANUAL: &str = "Control Center";
 
 /// Most holds kept; an app asking more often than that loses its oldest.
 const MAX_HOLDS: usize = 64;
@@ -58,7 +63,7 @@ impl Holds {
 
     /// The apps holding the screen awake, each once, in the order they asked.
     pub fn apps(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
+        let mut out: Vec<String> = if self.manual { vec![MANUAL.to_string()] } else { Vec::new() };
         for h in &self.holds {
             if !out.contains(&h.app) && out.len() < 16 {
                 out.push(h.app.clone());
@@ -105,6 +110,20 @@ impl ScreenSaver {
             warn!("screensaver: can't tell kompact: {e}");
         }
     }
+}
+
+/// 18c: whether Keep Awake is on, and the apps holding the screen awake besides.
+#[tauri::command]
+pub fn keep_awake_state(state: tauri::State<'_, ScreenSaver>) -> serde_json::Value {
+    state.with(|h| serde_json::json!({"on": h.manual, "apps": h.apps().into_iter().filter(|a| a != MANUAL).collect::<Vec<_>>()}))
+}
+
+/// 18c: Control Center → Keep Awake.
+#[tauri::command]
+pub fn set_keep_awake(app: AppHandle, state: tauri::State<'_, ScreenSaver>, on: bool) {
+    state.with(|h| h.manual = on);
+    info!("screensaver: Keep Awake {}", if on { "on (Control Center)" } else { "off" });
+    state.send(&app);
 }
 
 struct Server {
@@ -223,6 +242,19 @@ mod tests {
             h.inhibit(":1.30", "spam");
         }
         assert_eq!(h.holds.len(), MAX_HOLDS);
+    }
+
+    #[test]
+    fn keep_awake_switch() {
+        let mut h = Holds::default();
+        h.inhibit(":1.10", "mpv");
+        h.manual = true;
+        assert_eq!(h.apps(), [MANUAL, "mpv"]);
+        // mpv leaving doesn't end it; turning it off does.
+        h.gone(":1.10");
+        assert_eq!(keep_awake_line(&h.apps()), "keep-awake Control Center\n");
+        h.manual = false;
+        assert!(h.apps().is_empty());
     }
 
     #[test]

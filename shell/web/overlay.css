@@ -549,6 +549,21 @@ section[hidden] { display: none !important; }
 :root[data-theme="light"] .nc-card, :root[data-theme="light"] .cc-tile, :root[data-theme="light"] .cc-card { background: rgba(0, 0, 0, 0.05); }
 :root[data-theme="light"] .nc-card.clickable:hover, :root[data-theme="light"] .cc-tile:hover { background: rgba(0, 0, 0, 0.09); }
 :root[data-theme="light"] .cc-glyph { background: rgba(0, 0, 0, 0.1); }
+/* 18a–18c */
+.cc-tile { position: relative; }
+.cc-more { margin-left: auto; padding: 0 2px 0 6px; font-size: 16px; color: var(--sp-dim); }
+.cc-more:hover { color: inherit; }
+.cc-device { padding: 2px 0; border-radius: 6px; }
+.cc-media { display: flex; align-items: center; gap: 10px; }
+.cc-art { flex: none; width: 40px; height: 40px; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.15); font-size: 18px; }
+.cc-art img { width: 100%; height: 100%; object-fit: cover; }
+.cc-media-text { flex: 1; }
+.cc-media-buttons { flex: none; display: flex; gap: 2px; }
+.cc-media-btn { border: 0; background: transparent; color: inherit; font-size: 15px; width: 26px; height: 26px; border-radius: 50%; }
+.cc-media-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.13); }
+.cc-media-btn:disabled { opacity: 0.35; }
+:root[data-theme="light"] .cc-art { background: rgba(0, 0, 0, 0.1); }
+:root[data-theme="light"] .cc-media-btn:hover:not(:disabled) { background: rgba(0, 0, 0, 0.09); }
 :root[data-theme="light"] .nc-clear { background: rgba(0, 0, 0, 0.08); }
 
 /* ---- 12e: polkit's password dialog ---- */

@@ -125,6 +125,38 @@ pub fn waves(volume: f32, muted: bool) -> u8 {
     }
 }
 
+/// 17a: which of `pw-dump --monitor`'s updates matter here. Only nodes (devices, streams, their
+/// volume and state), devices (their volume routes) and metadata (the default devices) do;
+/// clients don't, and every `wpctl`/`pw-dump` we run to read the state connects as one, so
+/// reacting to those fed itself (~8 processes a second for as long as the shell ran).
+#[derive(Debug, Default)]
+pub struct Changes {
+    /// Ids of the objects that matter, so their removals (`"info": null`, no type) count too.
+    watched: std::collections::HashSet<u64>,
+}
+
+impl Changes {
+    /// One update (a JSON array of objects): does any of it matter?
+    pub fn feed(&mut self, update: &Value) -> bool {
+        let mut matters = false;
+        for o in update.as_array().into_iter().flatten() {
+            let Some(id) = o["id"].as_u64() else { continue };
+            match o["type"].as_str() {
+                Some("PipeWire:Interface:Node" | "PipeWire:Interface:Device" | "PipeWire:Interface:Metadata") => {
+                    self.watched.insert(id);
+                    matters = true;
+                }
+                Some(_) => {
+                    // An id can come back as something else.
+                    self.watched.remove(&id);
+                }
+                None => matters |= self.watched.remove(&id),
+            }
+        }
+        matters
+    }
+}
+
 // ---- PipeWire ----
 
 fn run(args: &[&str]) -> Result<String, String> {
@@ -283,7 +315,8 @@ pub fn osd_hide(app: AppHandle) {
     }
 }
 
-/// `pw-dump --monitor` → `kompact-sound-changed` (at most every 500 ms).
+/// `pw-dump --monitor` → `kompact-sound-changed` (at most every 500 ms), for the updates that
+/// matter (`Changes`). It prints each update as a JSON array, its closing `]` alone on a line.
 pub fn start(app: AppHandle) {
     std::thread::Builder::new()
         .name("sound".into())
@@ -298,9 +331,19 @@ pub fn start(app: AppHandle) {
             let Some(stdout) = child.stdout.take() else { return };
             let mut last = std::time::Instant::now() - Duration::from_secs(1);
             let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut changes = Changes::default();
+            let mut update = String::new();
             for line in std::io::BufReader::new(stdout).lines() {
-                if line.is_err() {
-                    break;
+                let Ok(line) = line else { break };
+                update.push_str(&line);
+                update.push('\n');
+                if line != "]" {
+                    continue;
+                }
+                let matters = serde_json::from_str::<Value>(&update).map(|u| changes.feed(&u)).unwrap_or(true);
+                update.clear();
+                if !matters {
+                    continue;
                 }
                 if last.elapsed() >= Duration::from_millis(500) {
                     last = std::time::Instant::now();
@@ -323,6 +366,31 @@ pub fn start(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_sound_changes_count() {
+        let mut c = Changes::default();
+        // The first dump: a sink and the default-device metadata matter.
+        assert!(c.feed(&json!([
+            {"id": 38, "type": "PipeWire:Interface:Node", "info": {}},
+            {"id": 40, "type": "PipeWire:Interface:Metadata", "metadata": []},
+            {"id": 33, "type": "PipeWire:Interface:Client", "info": {}}
+        ])));
+        // A `wpctl` connecting and leaving (seen live, ~8 a second) doesn't.
+        assert!(!c.feed(&json!([{"id": 99, "type": "PipeWire:Interface:Client", "info": {}}])));
+        assert!(!c.feed(&json!([{"id": 99, "info": null}])));
+        assert!(!c.feed(&json!([{"id": 120, "type": "PipeWire:Interface:Link", "info": {}}])));
+        // A volume change on the sink, a device route, a new default do.
+        assert!(c.feed(&json!([{"id": 38, "type": "PipeWire:Interface:Node", "info": {"change-mask": ["params"]}}])));
+        assert!(c.feed(&json!([{"id": 51, "type": "PipeWire:Interface:Device", "info": {}}])));
+        assert!(c.feed(&json!([{"id": 40, "type": "PipeWire:Interface:Metadata", "metadata": [{"key": "default.audio.sink"}]}])));
+        // The sink going away does, once.
+        assert!(c.feed(&json!([{"id": 38, "info": null}])));
+        assert!(!c.feed(&json!([{"id": 38, "info": null}])));
+        // Its id reused by a client doesn't.
+        c.feed(&json!([{"id": 51, "type": "PipeWire:Interface:Client", "info": {}}]));
+        assert!(!c.feed(&json!([{"id": 51, "info": null}])));
+    }
 
     #[test]
     fn devices_from_a_dump() {

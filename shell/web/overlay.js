@@ -1587,19 +1587,30 @@ function ncRender() {
 // ---- 12d: Control Center (the menu bar's switches): Wi-Fi, Bluetooth, Do Not Disturb, Dark
 // Mode, sound and the microphone, from the same commands as their own menus ----
 
-/** @type {{net: NetState | null, bt: BtState | null, sd: SdState | null, dnd: boolean, k: any}} */
-let cc = { net: null, bt: null, sd: null, dnd: false, k: null };
+// 18a–18c: Now Playing, the output device, Keep Awake, Screenshot, Lock Screen, and › on Wi-Fi
+// and Bluetooth for their full menus.
+
+/** @typedef {{bus: string, name: string, status: string, title: string, artist: string, art: string | null, can_previous: boolean, can_next: boolean, can_play_pause: boolean}} MediaPlayer */
+/** @type {{net: NetState | null, bt: BtState | null, sd: SdState | null, dnd: boolean, k: any, media: MediaPlayer[], awake: {on: boolean, apps: string[]} | null}} */
+let cc = { net: null, bt: null, sd: null, dnd: false, k: null, media: [], awake: null };
 
 async function ccOpen() {
-  const [netS, btS, sdS, ncS, k] = await Promise.all([
+  const [netS, btS, sdS, ncS, k, media, awake] = await Promise.all([
     invoke("network_state"),
     invoke("bluetooth_state"),
     invoke("sound_state"),
     invoke("notify_center"),
     invoke("kompact_settings_state"),
+    invoke("media_state"),
+    invoke("keep_awake_state"),
   ]);
-  cc = { net: netS || null, bt: btS || null, sd: sdS || null, dnd: !!ncS?.dnd, k: k || null };
+  cc = { net: netS || null, bt: btS || null, sd: sdS || null, dnd: !!ncS?.dnd, k: k || null, media: media || [], awake: awake || null };
   ccRender();
+}
+
+/** 18b: from a tile's ›, that item's own menu in place of this one. @param {string} which */
+function ccMore(which) {
+  invoke("open_status", { which, x: stX });
 }
 
 /** @param {boolean} on */
@@ -1612,8 +1623,9 @@ async function ccSetDnd(on) {
   else if (stWhich === "center") void ncOpen();
 }
 
-/** A round toggle tile. @param {string} glyph @param {string} name @param {string} detail @param {boolean} on @param {() => void} click */
-function ccTile(glyph, name, detail, on, click) {
+/** A round toggle tile; `more` adds a › for the item's own menu.
+ * @param {string} glyph @param {string} name @param {string} detail @param {boolean} on @param {() => void} click @param {() => void} [more] */
+function ccTile(glyph, name, detail, on, click, more) {
   const t = document.createElement("button");
   t.className = `cc-tile${on ? " on" : ""}`;
   t.append(stEl("cc-glyph", glyph));
@@ -1621,7 +1633,61 @@ function ccTile(glyph, name, detail, on, click) {
   text.append(stEl("cc-name", name), stEl("cc-detail", detail));
   t.append(text);
   t.addEventListener("click", click);
+  if (more) {
+    const m = document.createElement("span");
+    m.className = "cc-more";
+    m.textContent = "›";
+    m.title = `${name} settings`;
+    m.addEventListener("click", (e) => {
+      e.stopPropagation();
+      more();
+    });
+    t.append(m);
+  }
   return t;
+}
+
+/** 18a: Now Playing: the first player (playing, else paused), its cover, title and buttons. */
+function ccMedia() {
+  const p = cc.media[0];
+  if (!p) return null;
+  const card = stEl("cc-card cc-media");
+  const art = document.createElement("div");
+  art.className = "cc-art";
+  if (p.art) {
+    const img = document.createElement("img");
+    img.src = p.art;
+    img.alt = "";
+    img.addEventListener("error", () => img.remove());
+    art.append(img);
+  } else {
+    art.textContent = "♪";
+  }
+  const text = stEl("cc-text cc-media-text");
+  text.append(stEl("cc-name", p.title || p.name), stEl("cc-detail", p.artist || p.name));
+  const buttons = stEl("cc-media-buttons");
+  /** @param {string} glyph @param {string} action @param {boolean} can @param {string} label */
+  const btn = (glyph, action, can, label) => {
+    const b = document.createElement("button");
+    b.className = "cc-media-btn";
+    b.textContent = glyph;
+    b.disabled = !can;
+    b.setAttribute("aria-label", label);
+    b.addEventListener("click", async () => {
+      await invoke("media_control", { bus: p.bus, action });
+      cc.media = (await invoke("media_state")) || cc.media;
+      ccRender();
+    });
+    return b;
+  };
+  buttons.append(
+    btn("⏮", "previous", p.can_previous, "Previous"),
+    btn(p.status === "Playing" ? "⏸" : "▶", "play-pause", p.can_play_pause, p.status === "Playing" ? "Pause" : "Play"),
+    btn("⏭", "next", p.can_next, "Next"),
+  );
+  card.append(art, text, buttons);
+  card.title = p.name;
+  return card;
 }
 
 function ccRender() {
@@ -1636,10 +1702,10 @@ function ccRender() {
         await invoke("network_wifi", { on: !cc.net?.wifi_enabled });
         cc.net = (await invoke("network_state")) || cc.net;
         ccRender();
-      }),
+      }, () => ccMore("network")),
     );
   } else if (eth) {
-    grid.append(ccTile("🖧", "Ethernet", "Connected", true, () => {}));
+    grid.append(ccTile("🖧", "Ethernet", "Connected", true, () => ccMore("network"), () => ccMore("network")));
   }
   if (cc.bt?.adapter) {
     const on = (cc.bt.devices || []).filter((d) => d.paired && d.connected);
@@ -1648,7 +1714,7 @@ function ccRender() {
         await invoke("bluetooth_power", { on: !cc.bt?.powered });
         cc.bt = (await invoke("bluetooth_state")) || cc.bt;
         ccRender();
-      }),
+      }, () => ccMore("bluetooth")),
     );
   }
   grid.append(ccTile("🌙", "Do Not Disturb", cc.dnd ? "On" : "Off", cc.dnd, () => ccSetDnd(!cc.dnd)));
@@ -1658,6 +1724,24 @@ function ccRender() {
       await invoke("kompact_set", { key: "appearance", value: dark ? "light" : "dark" });
       cc.k = { ...(cc.k || {}), appearance: dark ? "light" : "dark", dark: !dark };
       ccRender();
+    }),
+  );
+  // 18c: Keep Awake (no lock or screens off while on), Screenshot, Lock Screen.
+  if (cc.awake) {
+    const others = cc.awake.apps.length ? `By ${cc.awake.apps.join(", ")}` : "Off";
+    grid.append(
+      ccTile("☕", "Keep Awake", cc.awake.on ? "On" : others, cc.awake.on, async () => {
+        await invoke("set_keep_awake", { on: !cc.awake?.on });
+        cc.awake = (await invoke("keep_awake_state")) || cc.awake;
+        ccRender();
+      }),
+    );
+  }
+  grid.append(ccTile("📷", "Screenshot", "Drag out an area", false, () => invoke("show_overlay", { mode: "select" })));
+  grid.append(
+    ccTile("🔒", "Lock Screen", "", false, () => {
+      close();
+      invoke("window_action", { action: "lock" });
     }),
   );
   out.push(grid);
@@ -1676,6 +1760,21 @@ function ccRender() {
     range.addEventListener("change", () => invoke("sound_volume", { output: true, volume: Number(range.value) / 100 }));
     row.append(stEl("st-check", "🔈"), range, stEl("st-check", "🔊"));
     card.append(row);
+    // 18b: where the sound goes, when there's a choice.
+    if (st.output.devices.length > 1) {
+      for (const d of st.output.devices) {
+        const r = stEl(`st-row st-item cc-device${d.id === st.output.current ? " st-active" : ""}`);
+        r.append(stEl("st-check", d.id === st.output.current ? "✓" : ""), stEl("st-name", d.nick || d.label));
+        r.title = d.label;
+        r.addEventListener("click", async () => {
+          if (d.id === st.output.current) return;
+          await invoke("sound_default", { id: d.id });
+          cc.sd = (await invoke("sound_state")) || cc.sd;
+          ccRender();
+        });
+        card.append(r);
+      }
+    }
     if (st.input.current !== null) {
       const mic = stEl("st-row");
       mic.append(stEl("st-check", "🎙️"), stEl("st-name", "Microphone"));
@@ -1690,6 +1789,8 @@ function ccRender() {
     }
     out.push(card);
   }
+  const media = ccMedia();
+  if (media) out.push(media);
   stMenu.classList.add("wide");
   stMenu.replaceChildren(...out);
   stPlace();
@@ -1703,6 +1804,17 @@ if (window.__TAURI__) {
     if (mode !== "status" || stWhich !== "center") return;
     nc = (await invoke("notify_center")) || nc;
     ncRender();
+  });
+  // 18a/18b: the Control Center follows the players and the sound devices while it's open.
+  t.event.listen("kompact-media-changed", async () => {
+    if (mode !== "status" || stWhich !== "control") return;
+    cc.media = (await invoke("media_state")) || [];
+    ccRender();
+  });
+  t.event.listen("kompact-sound-changed", async () => {
+    if (mode !== "status" || stWhich !== "control" || document.activeElement?.matches?.("input[type=range]")) return;
+    cc.sd = (await invoke("sound_state")) || cc.sd;
+    ccRender();
   });
 }
 
