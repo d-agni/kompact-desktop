@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Siva</title>
+  <link rel="stylesheet" href="siva.css">
+</head>
+<body class="right">
+  <!-- 19b: Siva, the desktop's assistant (src-tauri/src/assistant/siva.rs). -->
+  <div id="bubble" class="bubble" role="status" aria-live="polite" hidden></div>
+  <div id="menu" class="menu" role="menu" hidden>
+    <button role="menuitem" data-act="moods">Show my moods</button>
+    <div class="menu-label">Move to</div>
+    <div class="corners">
+      <button role="menuitem" data-corner="top-left" aria-label="Top left corner">↖</button>
+      <button role="menuitem" data-corner="top-right" aria-label="Top right corner">↗</button>
+      <button role="menuitem" data-corner="bottom-left" aria-label="Bottom left corner">↙</button>
+      <button role="menuitem" data-corner="bottom-right" aria-label="Bottom right corner">↘</button>
+    </div>
+    <button role="menuitem" data-act="motion" id="menu-motion">Less movement</button>
+    <button role="menuitem" data-act="hide">Hide Siva</button>
+  </div>
+  <div id="siva" class="siva" aria-label="Siva" title="Siva: click to say hello, right-click for more, drag to move">
+    <svg id="figure-svg" class="e-idle" width="132" height="140" viewBox="0 0 320 340" aria-hidden="true">
+      <defs>
+        <mask id="sivaMoonCut">
+          <rect x="160" y="30" width="60" height="60" fill="#FFFFFF"/>
+          <circle cx="199" cy="49" r="13" fill="#000000"/>
+        </mask>
+      </defs>
+      <g class="rings" fill="none" stroke="#9BD3F5" stroke-width="5">
+        <circle cx="160" cy="165" r="110"/><circle cx="160" cy="165" r="110"/><circle cx="160" cy="165" r="110"/>
+      </g>
+      <g class="figure">
+        <path d="M66 340 Q74 262 160 256 Q246 262 254 340 Z" fill="#E39B3A"/>
+        <path d="M118 262 Q160 300 202 262 Q190 300 160 312 Q130 300 118 262 Z" fill="#C97F24"/>
+        <rect x="140" y="220" width="40" height="44" rx="12" fill="#4774D6"/>
+        <ellipse cx="160" cy="248" rx="19" ry="6" fill="#2D56B5"/>
+        <g fill="#8B4A2B">
+          <circle cx="116" cy="263" r="5"/><circle cx="125" cy="273" r="5"/><circle cx="136" cy="281" r="5"/>
+          <circle cx="148" cy="286" r="5"/><circle cx="160" cy="288" r="5.5"/><circle cx="172" cy="286" r="5"/>
+          <circle cx="184" cy="281" r="5"/><circle cx="195" cy="273" r="5"/><circle cx="204" cy="263" r="5"/>
+        </g>
+        <g class="damaru">
+          <path d="M248 254 L276 254 L265 272 L276 290 L248 290 L259 272 Z" fill="#D58745" stroke="#8B4A2B" stroke-width="2.5" stroke-linejoin="round"/>
+          <path d="M250 258 L274 258 M250 286 L274 286" stroke="#F2C14E" stroke-width="2"/>
+          <path d="M262 272 Q276 266 286 262" stroke="#8B4A2B" stroke-width="1.5" fill="none"/>
+          <path d="M262 272 Q248 278 238 282" stroke="#8B4A2B" stroke-width="1.5" fill="none"/>
+          <circle cx="287" cy="261" r="3.5" fill="#F2C14E"/>
+          <circle cx="237" cy="283" r="3.5" fill="#F2C14E"/>
+        </g>
+        <g class="head">
+          <path class="lock-l" d="M92 146 Q78 188 92 232" stroke="#2B1E1A" stroke-width="11" stroke-linecap="round" fill="none"/>
+          <path class="lock-r" d="M228 146 Q242 188 228 232" stroke="#2B1E1A" stroke-width="11" stroke-linecap="round" fill="none"/>
+          <ellipse cx="88" cy="172" rx="10" ry="16" fill="#4371D2"/>
+          <ellipse cx="232" cy="172" rx="10" ry="16" fill="#4371D2"/>
+          <circle cx="88" cy="194" r="6" fill="none" stroke="#F2C14E" stroke-width="3"/>
+          <circle cx="232" cy="194" r="6" fill="none" stroke="#F2C14E" stroke-width="3"/>
+          <ellipse cx="160" cy="166" rx="72" ry="76" fill="#4F7BD9"/>
+          <path class="ganga" d="M148 50 C136 34 160 24 148 6" stroke="#9BD3F5" stroke-width="5" stroke-linecap="round" fill="none"/>
+          <ellipse cx="160" cy="70" rx="34" ry="28" fill="#2B1E1A"/>
+          <ellipse cx="160" cy="88" rx="27" ry="6" fill="#3B2A23"/>
+          <circle class="moon" cx="191" cy="57" r="15" fill="#F6E7B0" mask="url(#sivaMoonCut)"/>
+          <path d="M88 152 Q92 84 160 80 Q228 84 232 152 Q214 108 160 104 Q106 108 88 152 Z" fill="#2B1E1A"/>
+          <g class="tripundra">
+            <path d="M130 116 Q160 110 190 116" stroke="#F5F2EA" stroke-width="4" stroke-linecap="round" fill="none"/>
+            <path d="M127 124 Q160 117 193 124" stroke="#F5F2EA" stroke-width="4" stroke-linecap="round" fill="none"/>
+            <path d="M130 132 Q160 125 190 132" stroke="#F5F2EA" stroke-width="4" stroke-linecap="round" fill="none"/>
+            <ellipse cx="160" cy="123" rx="3.5" ry="6" fill="#D9443B"/>
+          </g>
+          <g class="brows">
+            <path class="brow-l fb t" d="M118 147 Q132 140 146 146" stroke="#2B1E1A" stroke-width="5" stroke-linecap="round" fill="none"/>
+            <path class="brow-r fb t" d="M174 146 Q188 140 202 147" stroke="#2B1E1A" stroke-width="5" stroke-linecap="round" fill="none"/>
+          </g>
+          <g class="eyes-open t">
+            <ellipse cx="134" cy="167" rx="13" ry="15" fill="#FFFFFF"/>
+            <ellipse cx="186" cy="167" rx="13" ry="15" fill="#FFFFFF"/>
+            <g class="pupils">
+              <circle cx="134" cy="169" r="7.5" fill="#1F1A2E"/>
+              <circle cx="186" cy="169" r="7.5" fill="#1F1A2E"/>
+              <circle cx="137" cy="165" r="2.4" fill="#FFFFFF"/>
+              <circle cx="189" cy="165" r="2.4" fill="#FFFFFF"/>
+            </g>
+          </g>
+          <g class="eyes-happy t" stroke="#1F1A2E" stroke-width="5" stroke-linecap="round" fill="none">
+            <path d="M121 170 Q134 156 147 170"/><path d="M173 170 Q186 156 199 170"/>
+          </g>
+          <g class="eyes-sleep t" stroke="#1F1A2E" stroke-width="4.5" stroke-linecap="round" fill="none">
+            <path d="M122 168 Q134 176 146 168"/><path d="M174 168 Q186 176 198 168"/>
+          </g>
+          <ellipse class="cheek t" cx="116" cy="193" rx="11" ry="7" fill="#F08BA5"/>
+          <ellipse class="cheek t" cx="204" cy="193" rx="11" ry="7" fill="#F08BA5"/>
+          <path d="M160 174 Q155 186 162 188" stroke="#3A5FB8" stroke-width="3" stroke-linecap="round" fill="none"/>
+          <path class="m-smile t" d="M141 203 Q160 219 179 203" stroke="#1F1A2E" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+          <path class="m-big t" d="M136 200 Q160 232 184 200 Q160 208 136 200 Z" fill="#7A2E3A" stroke="#1F1A2E" stroke-width="3" stroke-linejoin="round"/>
+          <ellipse class="m-o fb" cx="160" cy="209" rx="9" ry="8" fill="#7A2E3A" stroke="#1F1A2E" stroke-width="2.5"/>
+          <path class="m-wavy t" d="M143 211 Q151 204 160 211 Q169 218 177 211" stroke="#1F1A2E" stroke-width="4" stroke-linecap="round" fill="none"/>
+          <path class="m-frown t" d="M143 215 Q160 201 177 215" stroke="#1F1A2E" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+          <path class="m-small t" d="M151 208 Q160 213 169 208" stroke="#1F1A2E" stroke-width="4" stroke-linecap="round" fill="none"/>
+          <path class="drop" d="M222 128 Q228 138 222 142 Q216 138 222 128 Z" fill="#9BD3F5"/>
+        </g>
+      </g>
+      <g class="orbit">
+        <circle cx="160" cy="34" r="7" fill="#F6E7B0"/>
+        <circle cx="282" cy="196" r="5" fill="#9BD3F5"/>
+        <circle cx="44" cy="214" r="6" fill="#F6E7B0"/>
+      </g>
+      <g class="sparkles" fill="#F6E7B0">
+        <path d="M58 92 L62 102 L72 106 L62 110 L58 120 L54 110 L44 106 L54 102 Z"/>
+        <path d="M262 84 L265 92 L273 95 L265 98 L262 106 L259 98 L251 95 L259 92 Z"/>
+        <path d="M276 160 L279 167 L286 170 L279 173 L276 180 L273 173 L266 170 L273 167 Z"/>
+        <path d="M40 176 L43 183 L50 186 L43 189 L40 196 L37 189 L30 186 L37 183 Z"/>
+      </g>
+      <g class="zzz" fill="#C9D0EE" font-family="sans-serif" font-weight="700">
+        <text x="226" y="96" font-size="30">z</text>
+      </g>
+    </svg>
+  </div>
+  <script src="appearance.js"></script>
+  <script src="siva.js"></script>
+</body>
+</html>

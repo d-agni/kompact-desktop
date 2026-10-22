@@ -219,6 +219,12 @@ fn main() {
             media::media_state,
             media::media_control,
             screensaver::keep_awake_state,
+            assistant::siva::siva_state,
+            assistant::siva::siva_input,
+            assistant::siva::siva_drop,
+            assistant::siva::siva_corner,
+            assistant::siva::siva_show,
+            assistant::siva::siva_motion,
             screensaver::set_keep_awake,
             sound::osd_state,
             sound::osd_hide,
@@ -294,6 +300,8 @@ fn main() {
             }
             // 12c: the on-screen volume level (not tied to notifications).
             build_osd(app.handle(), gpu, snapshot_dir.clone())?;
+            // 19b: Siva, hidden until the Control Center shows him.
+            build_siva(app.handle(), gpu, snapshot_dir.clone())?;
             if notify::enabled_from_env(std::env::var("KOMPACT_SHELL_NOTIFICATIONS").ok().as_deref()) {
                 build_notify(app.handle(), gpu, snapshot_dir.clone())?;
                 notify::start(app.handle().clone());
@@ -712,6 +720,41 @@ fn build_osd(app: &AppHandle, gpu: Gpu, snapshot_dir: Option<PathBuf>) -> tauri:
         }
     });
     info!("osd: built (hidden until a volume key)");
+    Ok(())
+}
+
+/// 19b: Siva (`assistant::siva`): a small transparent surface on the top layer (above windows,
+/// below full-screen ones and the overlay), anchored top-left with margins so it can sit anywhere,
+/// never the keyboard, the pointer only on what the page draws (`siva_input`).
+fn build_siva(app: &AppHandle, gpu: Gpu, snapshot_dir: Option<PathBuf>) -> tauri::Result<()> {
+    use assistant::siva;
+    let window = WebviewWindowBuilder::new(app, siva::LABEL, WebviewUrl::App("siva.html".into()))
+        .title("Siva")
+        .visible(false)
+        .decorations(false)
+        .resizable(false)
+        .inner_size(siva::WIDTH as f64, siva::HEIGHT as f64)
+        .transparent(true)
+        .shared()
+        .build()?;
+    configure_webview(&window, siva::LABEL.into(), gpu, TRANSPARENT, snapshot_dir);
+    let gtk_window = window.gtk_window()?;
+    gtk_window.init_layer_shell();
+    gtk_window.set_namespace("kompact-siva");
+    gtk_window.set_layer(Layer::Top);
+    gtk_window.set_anchor(Edge::Top, true);
+    gtk_window.set_anchor(Edge::Left, true);
+    gtk_window.set_exclusive_zone(0);
+    gtk_window.set_keyboard_mode(KeyboardMode::None);
+    gtk_window.set_size_request(siva::WIDTH, siva::HEIGHT);
+    // Nothing takes the pointer until the page says where Siva is drawn.
+    gtk_window.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
+    window.on_window_event(|event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+        }
+    });
+    siva::after_build(app);
     Ok(())
 }
 

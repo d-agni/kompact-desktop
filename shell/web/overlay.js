@@ -1591,11 +1591,11 @@ function ncRender() {
 // and Bluetooth for their full menus.
 
 /** @typedef {{bus: string, name: string, status: string, title: string, artist: string, art: string | null, can_previous: boolean, can_next: boolean, can_play_pause: boolean}} MediaPlayer */
-/** @type {{net: NetState | null, bt: BtState | null, sd: SdState | null, dnd: boolean, k: any, media: MediaPlayer[], awake: {on: boolean, apps: string[]} | null}} */
-let cc = { net: null, bt: null, sd: null, dnd: false, k: null, media: [], awake: null };
+/** @type {{net: NetState | null, bt: BtState | null, sd: SdState | null, dnd: boolean, k: any, media: MediaPlayer[], awake: {on: boolean, apps: string[]} | null, siva: {shown: boolean} | null}} */
+let cc = { net: null, bt: null, sd: null, dnd: false, k: null, media: [], awake: null, siva: null };
 
 async function ccOpen() {
-  const [netS, btS, sdS, ncS, k, media, awake] = await Promise.all([
+  const [netS, btS, sdS, ncS, k, media, awake, siva] = await Promise.all([
     invoke("network_state"),
     invoke("bluetooth_state"),
     invoke("sound_state"),
@@ -1603,8 +1603,9 @@ async function ccOpen() {
     invoke("kompact_settings_state"),
     invoke("media_state"),
     invoke("keep_awake_state"),
+    invoke("siva_state"),
   ]);
-  cc = { net: netS || null, bt: btS || null, sd: sdS || null, dnd: !!ncS?.dnd, k: k || null, media: media || [], awake: awake || null };
+  cc = { net: netS || null, bt: btS || null, sd: sdS || null, dnd: !!ncS?.dnd, k: k || null, media: media || [], awake: awake || null, siva: siva || null };
   ccRender();
 }
 
@@ -1744,6 +1745,16 @@ function ccRender() {
       invoke("window_action", { action: "lock" });
     }),
   );
+  // 19b: Siva, the assistant: shown or hidden.
+  if (cc.siva) {
+    grid.append(
+      ccTile("✦", "Siva", cc.siva.shown ? "On the desktop" : "Hidden", cc.siva.shown, async () => {
+        await invoke("siva_show", { on: !cc.siva?.shown });
+        cc.siva = (await invoke("siva_state")) || cc.siva;
+        ccRender();
+      }),
+    );
+  }
   out.push(grid);
   if (cc.sd) {
     const st = cc.sd;
