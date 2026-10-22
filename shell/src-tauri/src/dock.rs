@@ -163,6 +163,9 @@ pub fn click_target(active: u64, windows: &[DockWindow], desktop_id: &str) -> Cl
 /// screen, from a `windows` message: what makes the dock hide (with `Hide::Smart`).
 /// 5j-2: and on the dock's monitor (`dock_output`); one filling another monitor leaves the dock
 /// alone. Without those fields (an older kompact) any monitor counts, as before.
+/// 16d: or overlaps the dock's bar (`over_dock`, kompact works it out): since the dock no longer
+/// reserves space (it would resize maximized windows as it comes and goes), it gets out of the
+/// way of any window under it.
 pub fn focused_fills(msg: &Value) -> bool {
     let active = msg.get("workspace").and_then(Value::as_u64).unwrap_or(1);
     let dock = msg.get("dock_output").and_then(Value::as_str);
@@ -172,7 +175,7 @@ pub fn focused_fills(msg: &Value) -> bool {
             flag(w, "focused")
                 && !flag(w, "minimized")
                 && w.get("workspace").and_then(Value::as_u64).unwrap_or(active) == active
-                && (flag(w, "maximized") || flag(w, "fullscreen"))
+                && (flag(w, "maximized") || flag(w, "fullscreen") || flag(w, "over_dock"))
                 && match (dock, w.get("output").and_then(Value::as_str)) {
                     (Some(dock), Some(on)) => dock == on,
                     _ => true,
@@ -543,6 +546,27 @@ pub fn dock_surface(app: AppHandle, reserve: bool, rects: Vec<[f64; 4]>, zone: O
     Ok(())
 }
 
+/// 16d: where the dock's bar is at rest (page px = the surface's logical px), for kompact to tell
+/// which windows reach into it.
+pub fn dock_bar_line(x: f64, y: f64, w: f64, h: f64) -> Option<String> {
+    let (x, y, w, h) = (x.round() as i64, y.round() as i64, w.round() as i64, h.round() as i64);
+    (w > 0 && h > 0).then(|| format!("dock-bar {x} {y} {w} {h}\n"))
+}
+
+/// The last `dock-bar` line, sent again to a kompact that (re)connects.
+static LAST_BAR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn last_bar_line() -> Option<String> {
+    LAST_BAR.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+#[tauri::command]
+pub fn dock_bar(compositor: State<'_, Compositor>, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    let line = dock_bar_line(x, y, w, h).ok_or("empty dock bar")?;
+    *LAST_BAR.lock().unwrap_or_else(|e| e.into_inner()) = Some(line.clone());
+    compositor.send_line_pub("dock-bar", &line)
+}
+
 /// Whether the Trash has anything in it (`$XDG_DATA_HOME/Trash/files`).
 #[tauri::command]
 pub fn dock_trash_full() -> bool {
@@ -705,6 +729,11 @@ mod tests {
         assert!(!focused_fills(&msg(2, true, false, true, false)), "another workspace");
         assert!(!focused_fills(&msg(1, true, true, true, false)), "minimized");
         assert!(!focused_fills(&serde_json::json!({"type":"windows"})));
+        // 16d: a window reaching into the dock counts too, only when focused.
+        let over = |focused: bool| serde_json::json!({"type":"windows","workspace":1,
+            "windows":[{"id":1,"workspace":1,"focused":focused,"minimized":false,"over_dock":true}]});
+        assert!(focused_fills(&over(true)));
+        assert!(!focused_fills(&over(false)));
         // 5j-2: only a window on the dock's monitor hides it.
         let on = |output: &str| {
             serde_json::json!({"type":"windows","workspace":1,"dock_output":"VGA-1","windows":[
@@ -728,6 +757,12 @@ mod tests {
         assert_eq!(cycle_target(1, &unfocused, "ff", false), Some(5));
         assert_eq!(cycle_target(1, &[w(2, "ff", 1, false, true)], "ff", true), None, "alone and in front");
         assert_eq!(cycle_target(1, &ws, "gedit", true), None);
+    }
+
+    #[test]
+    fn dock_bar_lines() {
+        assert_eq!(dock_bar_line(400.4, 20.0, 559.6, 70.0).as_deref(), Some("dock-bar 400 20 560 70\n"));
+        assert_eq!(dock_bar_line(0.0, 0.0, 0.0, 70.0), None);
     }
 
     #[test]

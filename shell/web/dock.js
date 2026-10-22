@@ -12,6 +12,9 @@
 // - pinned icons can be dragged into a new order, or up off the dock to unpin them;
 // - the dock hides while the focused window is maximized or full screen (or always, see its
 //   right-click menu) and comes back while the pointer is at the bottom edge.
+// 16d: it reserves screen space only when set never to hide; hiding (smart or always) it floats
+// over windows, so maximized and snapped windows keep the full height whether it shows or not,
+// and "smart" also hides it while the focused window reaches into it (kompact's `over_dock`).
 // The surface is DOCK_SURFACE_HEIGHT tall but takes the pointer only where the dock is
 // (`dock_surface` sets the input region), so the see-through part never blocks a window.
 "use strict";
@@ -52,7 +55,7 @@ let pinned = [];
 /** @type {Win[]} */
 let windows = [];
 let activeWs = 1;
-/** The focused window is maximized or full screen (kompact-shell works it out). */
+/** The focused window is maximized, full screen or under the dock (kompact-shell works it out). */
 let fills = false;
 /** @type {{hide: "smart" | "never" | "always", magnify: boolean, follow: boolean, size: number,
  *   zoom: number, dots: boolean, bounce: boolean, position: "bottom" | "left" | "right"}} */
@@ -450,7 +453,7 @@ function update() {
   dock.classList.toggle("hidden", !show);
   if (show !== shownBefore) {
     shownBefore = show;
-    console.log(`dock: ${show ? "shown" : "hidden"} (hide ${prefs.hide}, focused window fills the screen: ${fills})`);
+    console.log(`dock: ${show ? "shown" : "hidden"} (hide ${prefs.hide}, focused window fills the screen or is under the dock: ${fills})`);
   }
   schedule();
 }
@@ -460,7 +463,9 @@ let surfaceSig = "";
 function updateSurface() {
   const W = window.innerWidth;
   const H = window.innerHeight;
-  const reserve = !hiddenByPolicy();
+  // 16d: a reservation that came and went with the dock resized maximized windows each time.
+  const reserve = prefs.hide === "never";
+  sendBar();
   /** @type {number[][]} */
   let rects;
   // The strip along the dock's edge (10d-1c: whichever it is).
@@ -502,6 +507,16 @@ function updateSurface() {
   if (sig === surfaceSig) return;
   surfaceSig = sig;
   invoke("dock_surface", { reserve, rects, zone });
+}
+
+// 16d: where the bar is at rest (no magnification), for kompact's `over_dock`.
+let barSig = "";
+function sendBar() {
+  if (!base.width || !base.height) return;
+  const sig = JSON.stringify(base);
+  if (sig === barSig) return;
+  barSig = sig;
+  invoke("dock_bar", { x: base.left, y: base.top, w: base.width, h: base.height });
 }
 
 /** @param {number} x @param {number} y */

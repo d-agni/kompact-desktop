@@ -27,6 +27,12 @@
 //! `keys reset-all`, `keys record` (the next combination comes back as `recorded` instead of
 //! being acted on), `keys record-cancel`. Changes are answered with `keys_result`.
 //!
+//! 16b/16c, the window switcher (`switcher.rs`): kompact sends `{"type":"switcher","open":true,
+//! "sticky":false,"windows":[3,5,1],"selected":1}` (window ids in the order shown) when it
+//! appears and whenever the list or selection changes, and `{"type":"switcher","open":false}` when
+//! it ends. The shell asks `switcher open` (the dock's button), `switcher select <id>` (the pointer
+//! is on a card), `switcher pick <id>` (clicked) and `switcher cancel`.
+//!
 //! Encoding and parsing are pure and tested here; the socket work is non-blocking and runs from
 //! a 50 ms timer in `state.rs`, so a slow or dead shell never stalls the compositor (a client
 //! that can't take a write is dropped).
@@ -50,6 +56,8 @@ pub struct WindowInfo {
     pub fullscreen: bool,
     /// 5j-2: the output its centre is on (empty: none), so the dock only hides for its own.
     pub output: String,
+    /// 16d: on screen and overlapping the dock's bar (`dock-bar`), so the dock hides for it.
+    pub over_dock: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -77,6 +85,9 @@ pub enum Request {
     DockFollow(bool),
     /// 10d-1c: the edge the dock is on.
     DockSide(crate::dock_edge::Side),
+    /// 16d: `dock-bar <x> <y> <w> <h>`: where the dock's bar is at rest, in the dock surface's
+    /// own coordinates (windows overlapping it get `over_dock`).
+    DockBar { x: i32, y: i32, w: i32, h: i32 },
     /// 11a: where each window's dock icon is (centre, in the dock surface's own coordinates)
     /// and how big icons are, so minimizing can shrink a window into it.
     DockIcons { size: i32, icons: Vec<(u64, i32, i32)> },
@@ -100,6 +111,20 @@ pub enum Request {
     /// shell's org.freedesktop.ScreenSaver (D-Bus; the snap Firefox's way, via the portal);
     /// none: nothing.
     KeepAwake(Vec<String>),
+    /// 16b/16c: the window switcher.
+    Switcher(SwitcherRequest),
+}
+
+/// 16b/16c: what the shell asks of the window switcher.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SwitcherRequest {
+    /// The dock's button: open it with no keys held.
+    Open,
+    /// The pointer is on this window's card.
+    Select(u64),
+    /// This window's card was clicked: switch to it.
+    Pick(u64),
+    Cancel,
 }
 
 /// 12i-1b: most apps `keep-awake` lists, and the longest name.
@@ -327,10 +352,28 @@ pub fn parse_request(line: &str) -> Option<Request> {
             "off" => Request::DockFollow(false),
             _ => return None,
         },
+        "switcher" => {
+            let rest: Vec<&str> = words.by_ref().collect();
+            let req = match rest[..] {
+                ["open"] => SwitcherRequest::Open,
+                ["cancel"] => SwitcherRequest::Cancel,
+                ["select", id] => SwitcherRequest::Select(id.parse().ok()?),
+                ["pick", id] => SwitcherRequest::Pick(id.parse().ok()?),
+                _ => return None,
+            };
+            return Some(Request::Switcher(req));
+        }
         "shot" => {
             let n: Vec<i32> = words.by_ref().map(str::parse).collect::<Result<_, _>>().ok()?;
             match n[..] {
                 [x, y, w, h] if w > 0 && h > 0 => Request::Shot { x, y, w, h },
+                _ => return None,
+            }
+        }
+        "dock-bar" => {
+            let n: Vec<i32> = words.by_ref().map(str::parse).collect::<Result<_, _>>().ok()?;
+            match n[..] {
+                [x, y, w, h] if w > 0 && h > 0 && [x, y, w, h].iter().all(|v| v.abs() <= 100_000) => Request::DockBar { x, y, w, h },
                 _ => return None,
             }
         }
@@ -339,7 +382,7 @@ pub fn parse_request(line: &str) -> Option<Request> {
     // Exactly the words the command takes.
     let expected = match req {
         Request::Logout | Request::Layout | Request::Lock | Request::Token | Request::Displays => 1,
-        Request::Shot { .. } => 5,
+        Request::Shot { .. } | Request::DockBar { .. } => 5,
         _ => 2,
     };
     (line.split_whitespace().count() == expected).then_some(req)
@@ -350,8 +393,9 @@ pub fn encode_windows(active_workspace: usize, windows: &[WindowInfo], dock_outp
         .iter()
         .map(|w| {
             let output = if w.output.is_empty() { String::new() } else { format!(",\"output\":{}", json_string(&w.output)) };
+            let over_dock = if w.over_dock { ",\"over_dock\":true" } else { "" };
             format!(
-                "{{\"id\":{},\"app_id\":{},\"title\":{},\"workspace\":{},\"minimized\":{},\"focused\":{},\"maximized\":{},\"fullscreen\":{}{output}}}",
+                "{{\"id\":{},\"app_id\":{},\"title\":{},\"workspace\":{},\"minimized\":{},\"focused\":{},\"maximized\":{},\"fullscreen\":{}{output}{over_dock}}}",
                 w.id,
                 json_string(&w.app_id),
                 json_string(&w.title),
@@ -449,6 +493,17 @@ pub fn encode_screenshot(path: &str, width: i32, height: i32) -> String {
 pub fn encode_sharing(outputs: &[String]) -> String {
     let list = outputs.iter().map(|o| json_string(o)).collect::<Vec<_>>().join(",");
     format!("{{\"type\":\"sharing\",\"on\":{},\"outputs\":[{list}]}}\n", !outputs.is_empty())
+}
+
+/// 16b: the switcher's list (window ids in order) and selection, or `None`: it ended.
+pub fn encode_switcher(shown: Option<(&[u64], usize, bool)>) -> String {
+    match shown {
+        Some((ids, selected, sticky)) => {
+            let ids = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+            format!("{{\"type\":\"switcher\",\"open\":true,\"sticky\":{sticky},\"windows\":[{ids}],\"selected\":{selected}}}\n")
+        }
+        None => "{\"type\":\"switcher\",\"open\":false}\n".to_string(),
+    }
 }
 
 pub fn encode_key(action: &str) -> String {
@@ -706,6 +761,7 @@ mod tests {
             maximized: true,
             fullscreen: false,
             output: String::new(),
+            over_dock: false,
         };
         assert_eq!(
             encode_windows(1, &[w.clone()], None),
@@ -713,10 +769,13 @@ mod tests {
         );
         assert_eq!(encode_windows(4, &[], None), "{\"type\":\"windows\",\"workspace\":4,\"windows\":[]}\n");
         // 5j-2: with outputs.
-        let on_hdmi = WindowInfo { output: "HDMIA-1".into(), ..w };
+        let on_hdmi = WindowInfo { output: "HDMIA-1".into(), ..w.clone() };
         let msg = encode_windows(1, &[on_hdmi], Some("VGA-1"));
         assert!(msg.starts_with("{\"type\":\"windows\",\"workspace\":1,\"dock_output\":\"VGA-1\",\"windows\":[{\"id\":3,"), "{msg}");
         assert!(msg.ends_with("\"fullscreen\":false,\"output\":\"HDMIA-1\"}]}\n"), "{msg}");
+        // 16d: over the dock's bar.
+        let over = WindowInfo { over_dock: true, ..w };
+        assert!(encode_windows(1, &[over], None).ends_with("\"fullscreen\":false,\"over_dock\":true}]}\n"));
     }
 
     #[test]
@@ -727,6 +786,32 @@ mod tests {
     #[test]
     fn dock_to_message() {
         assert_eq!(encode_dock_to("HDMIA-1"), "{\"type\":\"dock_to\",\"output\":\"HDMIA-1\"}\n");
+    }
+
+    #[test]
+    fn dock_bar_requests() {
+        assert_eq!(parse_request("dock-bar 400 20 560 70"), Some(Request::DockBar { x: 400, y: 20, w: 560, h: 70 }));
+        assert_eq!(parse_request("dock-bar 400 20 0 70"), None);
+        assert_eq!(parse_request("dock-bar 400 20 560"), None);
+        assert_eq!(parse_request("dock-bar 400 20 560 70 1"), None);
+        assert_eq!(parse_request("dock-bar a 20 560 70"), None);
+    }
+
+    #[test]
+    fn switcher_messages() {
+        assert_eq!(parse_request("switcher open"), Some(Request::Switcher(SwitcherRequest::Open)));
+        assert_eq!(parse_request("switcher cancel\n"), Some(Request::Switcher(SwitcherRequest::Cancel)));
+        assert_eq!(parse_request("switcher select 4"), Some(Request::Switcher(SwitcherRequest::Select(4))));
+        assert_eq!(parse_request("switcher pick 12"), Some(Request::Switcher(SwitcherRequest::Pick(12))));
+        assert_eq!(parse_request("switcher"), None);
+        assert_eq!(parse_request("switcher pick"), None);
+        assert_eq!(parse_request("switcher pick x"), None);
+        assert_eq!(parse_request("switcher open 3"), None);
+        assert_eq!(
+            encode_switcher(Some((&[3, 5, 1], 1, false))),
+            "{\"type\":\"switcher\",\"open\":true,\"sticky\":false,\"windows\":[3,5,1],\"selected\":1}\n"
+        );
+        assert_eq!(encode_switcher(None), "{\"type\":\"switcher\",\"open\":false}\n");
     }
 
     #[test]

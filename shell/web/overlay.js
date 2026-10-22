@@ -5,10 +5,10 @@
 "use strict";
 
 /** @typedef {{id: string, name: string, comment: string, keywords: string, icon: boolean}} App */
-/** @typedef {"launchpad" | "spotlight" | "menu" | "dockmenu" | "spaces" | "select" | "status" | "auth"} Mode */
+/** @typedef {"launchpad" | "spotlight" | "menu" | "dockmenu" | "spaces" | "select" | "status" | "auth" | "switcher"} Mode */
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
-const views = { launchpad: $("launchpad"), spotlight: $("spotlight"), menu: $("menu"), dockmenu: $("dockmenu"), spaces: $("spaces"), select: $("select"), status: $("status"), auth: $("auth") };
+const views = { launchpad: $("launchpad"), spotlight: $("spotlight"), menu: $("menu"), dockmenu: $("dockmenu"), spaces: $("spaces"), select: $("select"), status: $("status"), auth: $("auth"), switcher: $("switcher") };
 const lpSearch = /** @type {HTMLInputElement} */ ($("lp-search"));
 const lpGrid = $("lp-grid");
 const lpEmpty = $("lp-empty");
@@ -594,7 +594,7 @@ const WS_WIDTH = 232; // .ws .mini in overlay.css
 const PANEL = 28; // PANEL_HEIGHT
 const wsGrid = $("ws-grid");
 
-/** @typedef {{id: number, workspace: number, minimized: boolean, focused: boolean, name: string,
+/** @typedef {{id: number, workspace: number, minimized: boolean, focused: boolean, name: string, title: string, app_id: string,
  *   desktop_id: string | null}} Win */
 /** @typedef {{id: number, x: number, y: number, w: number, h: number}} Placed */
 /** @typedef {{x: number, y: number, w: number, h: number}} Rect */
@@ -786,6 +786,166 @@ if (wsEvents) {
   wsEvents.listen("kompact-windows", (/** @type {{payload: any}} */ e) => wsOnWindows(e.payload));
   wsEvents.listen("kompact-layout", (/** @type {{payload: any}} */ e) => wsOnLayout(e.payload));
   wsEvents.listen("kompact-thumb", (/** @type {{payload: any}} */ e) => wsOnThumb(e.payload));
+}
+
+// ---- 16b: the window switcher (Alt+Tab, the dock's button) ----
+// kompact keeps the list, the selection and the keyboard (`kompact/src/switcher.rs`); this page
+// draws what its `switcher` message says, using the window list (`wsWindows`) and thumbnails
+// (`wsShots`) the overview keeps up to date. The pointer selects (`switcher-select`) and picks
+// (`switcher-pick`); a click outside the box cancels.
+
+const swBox = $("sw-box");
+/** @type {{windows: number[], selected: number, sticky: boolean} | null} */
+let swMsg = null;
+/** The ids the cards were drawn for, so a selection change only moves the highlight. */
+let swDrawn = "";
+/** The pointer has really moved since the switcher opened: only then does it select (cards
+ * appearing under a still pointer would otherwise change what letting go of Alt picks). */
+let swMoved = false;
+/** @type {{x: number, y: number} | null} where the pointer was first seen */
+let swFirst = null;
+
+/** @param {Win} w */
+function swIcon(w) {
+  if (w.desktop_id) {
+    const img = document.createElement("img");
+    img.className = "sw-icon";
+    img.alt = "";
+    img.draggable = false;
+    img.src = `kompact-icon://localhost/${encodeURIComponent(w.desktop_id)}`;
+    img.addEventListener("error", () => img.replaceWith(swBadge(w)), { once: true });
+    return img;
+  }
+  return swBadge(w);
+}
+
+/** @param {Win} w */
+function swBadge(w) {
+  const name = w.name || w.app_id || "?";
+  const b = document.createElement("div");
+  b.className = "sw-icon badge";
+  const h = hue(w.app_id || name);
+  b.style.background = `linear-gradient(160deg, hsl(${h} 55% 55%), hsl(${h} 55% 38%))`;
+  b.textContent = (name.trim()[0] || "?").toUpperCase();
+  return b;
+}
+
+function swRender() {
+  if (!swMsg) return;
+  const ids = swMsg.windows;
+  const sig = ids.join(",");
+  if (sig !== swDrawn) {
+    swDrawn = sig;
+    const cards = ids.map((id) => {
+      const w = wsWindows.find((x) => x.id === id);
+      const card = document.createElement("div");
+      card.className = "sw-card";
+      card.dataset.id = String(id);
+      card.setAttribute("role", "option");
+      const thumb = document.createElement("div");
+      thumb.className = "sw-thumb";
+      if (w) {
+        const h = hue(w.app_id || String(id));
+        thumb.style.background = `linear-gradient(160deg, hsl(${h} 30% 34%), hsl(${h} 30% 18%))`;
+        thumb.append(swIcon(w));
+        if (w.minimized) {
+          const tag = document.createElement("span");
+          tag.className = "sw-tag";
+          tag.textContent = "Minimized";
+          thumb.append(tag);
+        }
+      }
+      swShot(thumb, id);
+      const title = document.createElement("div");
+      title.className = "sw-title";
+      title.textContent = (w && (w.title || w.name || w.app_id)) || `Window ${id}`;
+      card.append(thumb, title);
+      card.setAttribute("aria-label", title.textContent);
+      card.addEventListener("mousemove", () => {
+        if (!swMoved || !swMsg || swMsg.windows[swMsg.selected] === id) return;
+        swMsg.selected = swMsg.windows.indexOf(id);
+        swHighlight();
+        invoke("window_action", { action: "switcher-select", id });
+      });
+      card.addEventListener("click", () => invoke("window_action", { action: "switcher-pick", id }));
+      return card;
+    });
+    swBox.replaceChildren(...cards);
+  }
+  swHighlight();
+}
+
+function swHighlight() {
+  const sel = swMsg ? swMsg.windows[swMsg.selected] : -1;
+  for (const c of swBox.children) {
+    const on = c instanceof HTMLElement && c.dataset.id === String(sel);
+    c.classList.toggle("selected", on);
+    c.setAttribute("aria-selected", String(on));
+  }
+}
+
+/** Window `id`'s latest thumbnail into its card's picture box (if there is one yet).
+ * @param {HTMLElement} thumb @param {number} id */
+function swShot(thumb, id) {
+  const v = wsShots.get(id);
+  if (v === undefined) return;
+  let img = /** @type {HTMLImageElement | null} */ (thumb.querySelector("img.shot"));
+  if (!img) {
+    img = document.createElement("img");
+    img.className = "shot";
+    img.alt = "";
+    img.draggable = false;
+    img.addEventListener("load", () => thumb.classList.add("has-shot"));
+    img.addEventListener("error", () => img?.remove(), { once: true });
+    thumb.prepend(img);
+  }
+  img.src = `kompact-thumb://localhost/${id}?v=${v}`;
+}
+
+/** @param {any} msg kompact's `switcher` message */
+function swOnMessage(msg) {
+  if (!msg || msg.open !== true || !Array.isArray(msg.windows)) {
+    swMsg = null;
+    swDrawn = "";
+    return;
+  }
+  const fresh = !swMsg;
+  swMsg = { windows: msg.windows, selected: Number(msg.selected) || 0, sticky: msg.sticky === true };
+  if (mode === "switcher") swRender();
+  if (fresh) invoke("request_thumbs", { ids: swMsg.windows });
+}
+
+async function swOpen() {
+  swMoved = false;
+  swFirst = null;
+  if (!swMsg) swOnMessage(await invoke("switcher_state"));
+  if (!swMsg) return;
+  // A window that opened since the last list (titles and icons come from it).
+  if (swMsg.windows.some((id) => !wsWindows.some((w) => w.id === id))) {
+    wsOnWindows(await invoke("compositor_state"));
+    swDrawn = "";
+  }
+  swRender();
+  console.log(`overlay: switcher open, ${swMsg.windows.length} windows${swMsg.sticky ? " (dock button)" : ""}`);
+}
+
+/** @param {{id: number, version: number}} t */
+function swOnThumb(t) {
+  if (mode !== "switcher") return;
+  const thumb = swBox.querySelector(`.sw-card[data-id="${t.id}"] .sw-thumb`);
+  if (thumb instanceof HTMLElement) swShot(thumb, t.id);
+}
+
+views.switcher.addEventListener("mousemove", (e) => {
+  if (swMoved) return;
+  if (!swFirst) swFirst = { x: e.screenX, y: e.screenY };
+  else if (Math.abs(e.screenX - swFirst.x) + Math.abs(e.screenY - swFirst.y) > 2) swMoved = true;
+}, { capture: true });
+
+if (wsEvents) {
+  wsEvents.listen("kompact-switcher", (/** @type {{payload: any}} */ e) => swOnMessage(e.payload));
+  // After the overview's listener, which keeps `wsShots`.
+  wsEvents.listen("kompact-thumb", (/** @type {{payload: any}} */ e) => swOnThumb(e.payload));
 }
 
 // ---- 9c: screenshot region (Shift+Print) ----
@@ -1656,6 +1816,8 @@ document.addEventListener("mousedown", (e) => {
   else if (mode === "dockmenu" && !t.closest(".menu")) close();
   else if (mode === "spaces" && !t.closest("#ws-box")) close();
   else if (mode === "status" && !t.closest(".menu")) close();
+  // 16b: kompact ends the switcher (and the shell hides us).
+  else if (mode === "switcher" && !t.closest(".sw-card")) invoke("window_action", { action: "switcher-cancel" });
 });
 
 // @ts-ignore: our own global, called by kompact-shell.
@@ -1666,6 +1828,7 @@ window.kompactOverlay = {
   clear(gen) {
     for (const v of Object.values(views)) v.hidden = true;
     mode = null;
+    swDrawn = "";
     requestAnimationFrame(() => requestAnimationFrame(() => invoke("overlay_cleared", { gen })));
   },
   /** @param {Mode} m */
@@ -1679,6 +1842,11 @@ window.kompactOverlay = {
     views.select.hidden = m !== "select";
     views.status.hidden = m !== "status";
     views.auth.hidden = m !== "auth";
+    views.switcher.hidden = m !== "switcher";
+    if (m === "switcher") {
+      void swOpen();
+      return;
+    }
     if (m === "auth") {
       void auOpen();
       return;

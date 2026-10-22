@@ -63,6 +63,11 @@ pub fn request_line(action: &str, id: Option<u64>) -> Option<String> {
         // 6e: the panel's workspace indicator; `id` is the workspace (1-based).
         ("workspace", Some(n)) => Some(format!("workspace {n}\n")),
         ("logout" | "layout" | "lock" | "token", None) => Some(format!("{action}\n")),
+        // 16b/16c: the window switcher (the dock's button, the overlay's cards).
+        ("switcher-open", None) => Some("switcher open\n".into()),
+        ("switcher-cancel", None) => Some("switcher cancel\n".into()),
+        ("switcher-select", Some(id)) => Some(format!("switcher select {id}\n")),
+        ("switcher-pick", Some(id)) => Some(format!("switcher pick {id}\n")),
         _ => None,
     }
 }
@@ -170,6 +175,12 @@ fn serve(app: &AppHandle, stream: UnixStream) {
     let prefs = crate::dock::dock_prefs();
     if let Err(e) = c.send_dock_follow(prefs).and_then(|_| c.send_dock_side(prefs)) {
         warn!("compositor: can't send the dock settings: {e}");
+    }
+    // 16d: where the dock's bar is, if the dock has said.
+    if let Some(line) = crate::dock::last_bar_line() {
+        if let Err(e) = c.send_line_pub("dock-bar", &line) {
+            warn!("compositor: can't send the dock bar: {e}");
+        }
     }
     // 12i-1b: a kompact that restarted hears who keeps the screen awake.
     if let Some(s) = app.try_state::<crate::screensaver::ScreenSaver>() {
@@ -342,6 +353,20 @@ fn serve(app: &AppHandle, stream: UnixStream) {
                 info!("compositor: recorded {line:.120}");
                 let _ = app.emit("kompact-recorded", msg);
             }
+            // 16b: the window switcher appeared, changed or ended (kompact drives it).
+            Some("switcher") => {
+                let open = msg.get("open").and_then(Value::as_bool).unwrap_or(false);
+                let handle = app.clone();
+                let _ = app.emit("kompact-switcher", msg.clone());
+                let _ = app.run_on_main_thread(move || {
+                    let overlay = handle.state::<crate::overlay::Overlay>();
+                    if open {
+                        overlay.show_switcher(&handle, msg);
+                    } else {
+                        overlay.hide_switcher(&handle);
+                    }
+                });
+            }
             // 6e: where the windows are, for the workspace overview.
             Some("layout") => {
                 let _ = app.emit("kompact-layout", msg);
@@ -421,7 +446,7 @@ impl Compositor {
     fn send_line(&self, action: &str, line: &str) -> Result<(), String> {
         let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let Some(stream) = writer.as_mut() else { return Err("not connected to kompact".into()) };
-        if action == "thumb" || action == "dock-icons" {
+        if action == "thumb" || action == "dock-icons" || action == "switcher-select" {
             // Every 2 s per window while a dock preview is open.
             tracing::debug!("compositor: sending {}", line.trim_end());
         } else {
@@ -660,6 +685,12 @@ mod tests {
         assert_eq!(request_line("workspace", Some(2)).as_deref(), Some("workspace 2\n"));
         assert_eq!(request_line("workspace", None), None);
         assert_eq!(request_line("layout", None).as_deref(), Some("layout\n"));
+        assert_eq!(request_line("switcher-open", None).as_deref(), Some("switcher open\n"));
+        assert_eq!(request_line("switcher-cancel", None).as_deref(), Some("switcher cancel\n"));
+        assert_eq!(request_line("switcher-select", Some(3)).as_deref(), Some("switcher select 3\n"));
+        assert_eq!(request_line("switcher-pick", Some(9)).as_deref(), Some("switcher pick 9\n"));
+        assert_eq!(request_line("switcher-pick", None), None);
+        assert_eq!(request_line("switcher-open", Some(1)), None);
         assert_eq!(request_line("logout", None).as_deref(), Some("logout\n"));
         assert_eq!(request_line("logout", Some(1)), None);
         assert_eq!(request_line("lock", None).as_deref(), Some("lock\n"));

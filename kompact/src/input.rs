@@ -125,13 +125,18 @@ impl Kompact {
                 let raw_sym = handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw()).unwrap_or(sym.raw());
 
                 if state != KeyState::Pressed {
+                    // 16a: the switch's modifiers are up: switch to the selected window.
+                    let now_held = Mods { ctrl: mods.ctrl, alt: mods.alt, shift: mods.shift, logo: mods.logo };
+                    if compositor_state.switcher.as_ref().is_some_and(|s| s.released(now_held)) {
+                        compositor_state.switcher_commit("modifier released");
+                    }
                     // 10a: a lone tap of Super, on its release (the press went to the app).
                     if compositor_state.key_tap.release(raw_sym) && !compositor_state.lock.is_locked() {
                         // 10b: being recorded, it's the answer instead.
                         if let Some(r) = compositor_state.key_recorder.tap() {
                             compositor_state.finish_recording(r);
                         } else if let Some(action) = compositor_state.keymap.tap_action() {
-                            compositor_state.run_key_action(action, None, " (Super tap)");
+                            compositor_state.run_key_action(action, None, None, " (Super tap)");
                         }
                     }
                     return FilterResult::Forward;
@@ -170,6 +175,15 @@ impl Kompact {
                         }
                     };
                 }
+                // 16a: the switcher is open: its keys move or end it, the others are kept from
+                // the app (modifiers still go, so the app sees them come and go).
+                if compositor_state.switcher.is_some() && !compositor_state.lock.is_locked() {
+                    if crate::keymap::is_modifier_sym(raw_sym) {
+                        return FilterResult::Forward;
+                    }
+                    compositor_state.switcher_key(raw_sym, held);
+                    return FilterResult::Intercept(());
+                }
                 let found = compositor_state.keymap.lookup(&press);
 
                 // 8d: while locked, every other key goes to the lock surface. The Lock key only
@@ -183,7 +197,7 @@ impl Kompact {
                 }
 
                 let Some((action, workspace)) = found else { return FilterResult::Forward };
-                if compositor_state.run_key_action(action, workspace, "") {
+                if compositor_state.run_key_action(action, workspace, Some(&press), "") {
                     FilterResult::Intercept(())
                 } else {
                     FilterResult::Forward
@@ -198,8 +212,8 @@ impl Kompact {
 
     /// 10a: do what a shortcut is bound to. False if it isn't ours to take after all
     /// (screenshot keys with `KOMPACT_SCREENSHOTS=off` go to the app, as before).
-    /// `how` is added to the log line (" (Super tap)").
-    pub fn run_key_action(&mut self, action: crate::keymap::Action, workspace: Option<usize>, how: &str) -> bool {
+    /// `how` is added to the log line (" (Super tap)"); `press` is the key (none for a Super tap).
+    pub fn run_key_action(&mut self, action: crate::keymap::Action, workspace: Option<usize>, press: Option<&crate::keymap::Press>, how: &str) -> bool {
         // 14c-2: on the login screen no shortcut does anything (the key goes to the page).
         if crate::greeter::active() {
             tracing::info!("greeter mode: {} ignored{how}", action.id());
@@ -224,7 +238,8 @@ impl Kompact {
             A::VolumeDown => self.shell_key("volume-down"),
             A::VolumeMute => self.shell_key("volume-mute"),
             A::MicMute => self.shell_key("mic-mute"),
-            A::SwitchWindows => self.focus_next_window(),
+            // 16a: held, a session (most recently used order); a Super tap switches at once.
+            A::SwitchWindows => self.start_switcher(press.map(|p| p.mods).unwrap_or_default(), press.map(|p| p.sym)),
             A::CloseWindow => self.close_focused_window(),
             A::Minimize => self.minimize_focused(),
             A::RestoreMinimized => self.restore_minimized(),

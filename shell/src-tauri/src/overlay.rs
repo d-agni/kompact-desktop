@@ -49,6 +49,9 @@ pub enum Mode {
     Status,
     /// 12e: polkit's password dialog (`polkit.rs`).
     Auth,
+    /// 16b: the window switcher (Alt+Tab, the dock's button). kompact drives it: it keeps the
+    /// keyboard, so the overlay takes none (`keyboard_mode`).
+    Switcher,
 }
 
 /// 12a: the menu-bar items that open a status menu.
@@ -65,6 +68,7 @@ impl Mode {
             "select" => Some(Mode::Select),
             "status" => Some(Mode::Status),
             "auth" => Some(Mode::Auth),
+            "switcher" => Some(Mode::Switcher),
             _ => None,
         }
     }
@@ -79,6 +83,16 @@ impl Mode {
             Mode::Select => "select",
             Mode::Status => "status",
             Mode::Auth => "auth",
+            Mode::Switcher => "switcher",
+        }
+    }
+
+    /// The keyboard while it shows: ours alone, except for the switcher, whose keys kompact
+    /// handles (Alt is still down, the app keeps the keyboard until the switch).
+    fn keyboard_mode(self) -> KeyboardMode {
+        match self {
+            Mode::Switcher => KeyboardMode::None,
+            _ => KeyboardMode::Exclusive,
         }
     }
 }
@@ -162,6 +176,8 @@ struct Inner {
     mapped: bool,
     /// 13b: counts closes; a late "cleared" from an earlier close hides nothing.
     hide_gen: u64,
+    /// 16b: kompact's last `switcher` message while it's open.
+    switcher: Option<serde_json::Value>,
 }
 
 /// One app as the overlay and dock pages see it.
@@ -248,14 +264,17 @@ impl Overlay {
                 warn!("overlay: script failed: {e}");
             }
         }
-        // Exclusive: kompact gives us the keyboard while the overlay is up (6c-1).
-        gtk_window.set_keyboard_mode(KeyboardMode::Exclusive);
+        // Exclusive: kompact gives us the keyboard while the overlay is up (6c-1); 16b: not for
+        // the switcher.
+        gtk_window.set_keyboard_mode(mode.keyboard_mode());
         if !was_mapped {
             if let Err(e) = window.show() {
                 warn!("overlay: can't show: {e}");
             }
         }
-        let _ = window.set_focus();
+        if mode.keyboard_mode() != KeyboardMode::None {
+            let _ = window.set_focus();
+        }
         info!("overlay: {} opened ({why})", mode.name());
     }
 
@@ -381,6 +400,13 @@ pub fn open_status(app: AppHandle, overlay: State<'_, Overlay>, which: String, x
     overlay.open_status(&app, which, x);
 }
 
+/// 16b: the switcher's list and selection (kompact's last `switcher` message), for the page
+/// opening it.
+#[tauri::command]
+pub fn switcher_state(overlay: State<'_, Overlay>) -> Option<serde_json::Value> {
+    overlay.lock().switcher.clone()
+}
+
 /// 12a: which status menu the page should show, and where.
 #[tauri::command]
 pub fn status_target(overlay: State<'_, Overlay>) -> Option<(String, f64)> {
@@ -489,6 +515,23 @@ impl Overlay {
             self.lock().open = None;
         }
         self.open(app, Mode::Auth, "polkit asks for a password");
+    }
+
+    /// 16b: kompact opened the switcher or changed it: show it (the page follows the
+    /// `kompact-switcher` event once it's up).
+    pub fn show_switcher(&self, app: &AppHandle, msg: serde_json::Value) {
+        self.lock().switcher = Some(msg);
+        if self.lock().open != Some(Mode::Switcher) {
+            self.open(app, Mode::Switcher, "window switcher");
+        }
+    }
+
+    /// 16b: kompact ended the switcher.
+    pub fn hide_switcher(&self, app: &AppHandle) {
+        self.lock().switcher = None;
+        if self.lock().open == Some(Mode::Switcher) {
+            self.close(app, "window switcher ended");
+        }
     }
 
     pub fn status_target(&self) -> Option<(String, f64)> {
@@ -690,7 +733,7 @@ mod tests {
         assert_eq!(Mode::parse("spotlight"), Some(Mode::Spotlight));
         assert_eq!(Mode::parse("Spotlight"), None);
         assert_eq!(Mode::parse("menu"), Some(Mode::Menu));
-        for m in [Mode::Launchpad, Mode::Spotlight, Mode::Menu, Mode::DockMenu, Mode::Spaces] {
+        for m in [Mode::Launchpad, Mode::Spotlight, Mode::Menu, Mode::DockMenu, Mode::Spaces, Mode::Switcher] {
             assert_eq!(Mode::parse(m.name()), Some(m));
         }
     }

@@ -108,6 +108,7 @@ window.addEventListener("resize", applyMenuBar);
 
 document.getElementById("logo")?.addEventListener("click", () => invoke("toggle_overlay", { mode: "menu" }));
 document.getElementById("apps")?.addEventListener("click", () => invoke("toggle_overlay", { mode: "launchpad" }));
+document.getElementById("switcher")?.addEventListener("click", () => invoke("window_action", { action: "switcher-open" }));
 document.getElementById("spotlight")?.addEventListener("click", () => invoke("toggle_overlay", { mode: "spotlight" }));
 /** @typedef {{id: number, name: string, focused: boolean, workspace: number}} Win */
 /** @typedef {{workspace: number, windows: Win[]}} WindowsMsg */

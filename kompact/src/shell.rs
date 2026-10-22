@@ -226,18 +226,173 @@ impl Kompact {
         }
     }
 
-    /// Cycle keyboard focus to the next window in stacking order; 10c: then through this
-    /// workspace's minimized windows, bringing back the one picked (`workspace::next_in_cycle`).
-    pub fn focus_next_window(&mut self) {
-        let visible: Vec<Window> = self.space.elements().cloned().collect();
+    /// 16a: the windows the switcher lists (`switcher::order`), and whether the first is the one
+    /// in use (the selection then starts on the next).
+    fn switch_list(&self) -> (Vec<Window>, bool) {
+        let top_to_bottom: Vec<Window> = self.space.elements().rev().cloned().collect();
         let minimized = self.workspaces.minimized_here();
-        let current = self.focused_window();
-        let Some(next) = crate::workspace::next_in_cycle(&visible, &minimized, current.as_ref()) else { return };
-        if minimized.contains(&next) {
-            tracing::info!("next window: bringing back minimized {:?}", app_id(&next));
-            self.activate_window(&next);
+        // While a shell surface holds the keyboard, the window in front is still the one in use
+        // (as in `window_infos`).
+        let keyboard_on_layer = self
+            .seat
+            .get_keyboard()
+            .and_then(|k| k.current_focus())
+            .is_some_and(|s| self.window_for_surface(&s).is_none());
+        let current = self
+            .focused_window()
+            .or_else(|| keyboard_on_layer.then(|| top_to_bottom.first().cloned()).flatten());
+        let list = crate::switcher::order(&top_to_bottom, &minimized, current.as_ref());
+        (list, current.is_some())
+    }
+
+    /// 16a: the switch shortcut (Alt+Tab, Super+Tab) went down with `mods`, `key` its keysym
+    /// (`None`: a Super tap). With modifiers to hold, a session starts and the switch happens when
+    /// they go up (`switcher_commit`); without, at once.
+    pub fn start_switcher(&mut self, mods: crate::keymap::Mods, key: Option<u32>) {
+        use crate::switcher::{Hold, Session};
+        // Already open (the dock's button, then a Super tap bound to this): the next one.
+        if let Some(s) = self.switcher.as_mut() {
+            s.step(1);
+            self.send_switcher();
+            return;
+        }
+        let (list, has_current) = self.switch_list();
+        let now = std::time::Instant::now();
+        let Some(hold) = Hold::of(mods) else {
+            if let Some(s) = Session::new(list, has_current, Hold::Sticky, None, now) {
+                let w = s.selected().clone();
+                self.switch_to(&w);
+            }
+            return;
+        };
+        self.open_switcher(Session::new(list, has_current, hold, key, now));
+    }
+
+    /// 16c: the dock's switcher button: a session that stays until a choice or Esc.
+    fn start_sticky_switcher(&mut self) {
+        use crate::switcher::{Hold, Session};
+        if self.switcher.is_some() {
+            return;
+        }
+        let (list, has_current) = self.switch_list();
+        self.open_switcher(Session::new(list, has_current, Hold::Sticky, None, std::time::Instant::now()));
+    }
+
+    fn open_switcher(&mut self, session: Option<crate::switcher::Session<Window>>) {
+        let Some(s) = session else {
+            tracing::info!("switcher: no windows on this desktop");
+            return;
+        };
+        tracing::info!(
+            "switcher: {} windows, {:?} selected{}",
+            s.list().len(),
+            app_id(s.selected()),
+            if s.is_sticky() { " (dock button)" } else { "" }
+        );
+        self.switcher = Some(s);
+        self.switcher_tick();
+    }
+
+    /// 16b: the switcher's list for the shell, once it's due (`switcher::SHOW_AFTER`) or changed.
+    fn send_switcher(&mut self) {
+        let Some(s) = self.switcher.as_mut() else { return };
+        if !self.ipc.has_clients() {
+            return;
+        }
+        let first = !s.shown;
+        s.shown = true;
+        let ids: Vec<u64> = s.list().iter().map(window_id).collect();
+        let msg = crate::ipc::encode_switcher(Some((&ids, s.selected_index(), s.is_sticky())));
+        if first {
+            tracing::info!("switcher: shown");
+            // 5j: the overlay opens on the pointer's output, so the shell must know it first.
+            self.send_pointer_output();
+        }
+        self.ipc.broadcast(&msg);
+    }
+
+    /// 16b: from the 50 ms tick (and on open): show the list when due; drop closed windows; end
+    /// the session behind the lock screen.
+    pub fn switcher_tick(&mut self) {
+        let Some(s) = self.switcher.as_mut() else { return };
+        if self.lock.is_locked() {
+            self.end_switcher("locked");
+            return;
+        }
+        let changed = s.retain(|w| w.alive());
+        if s.list().is_empty() {
+            self.end_switcher("every window closed");
+            return;
+        }
+        if s.due(std::time::Instant::now()) || (changed && s.shown) {
+            self.send_switcher();
+        }
+    }
+
+    /// 16a: a key went down while the switcher is open (modifiers aren't passed here).
+    pub fn switcher_key(&mut self, sym: u32, mods: crate::keymap::Mods) {
+        use crate::switcher::KeyOutcome;
+        let Some(s) = self.switcher.as_mut() else { return };
+        match s.key(sym, mods) {
+            KeyOutcome::Moved => {
+                tracing::info!("switcher: {:?} selected", app_id(s.selected()));
+                // Browsing with more presses: show it now rather than after the delay.
+                self.send_switcher();
+            }
+            KeyOutcome::Commit => self.switcher_commit("Enter"),
+            KeyOutcome::Cancel => self.end_switcher("Esc"),
+            KeyOutcome::Ignored => {}
+        }
+    }
+
+    /// 16a: switch to the selected window and end the session.
+    pub fn switcher_commit(&mut self, why: &str) {
+        let Some(s) = self.switcher.as_ref() else { return };
+        let w = s.selected().clone();
+        self.end_switcher(why);
+        if w.alive() {
+            self.switch_to(&w);
+        }
+    }
+
+    /// End the session without switching (the shell hides the list).
+    fn end_switcher(&mut self, why: &str) {
+        let Some(s) = self.switcher.take() else { return };
+        tracing::info!("switcher: closed ({why})");
+        if s.shown {
+            self.ipc.broadcast(&crate::ipc::encode_switcher(None));
+        }
+    }
+
+    /// 16a: bring `w` in front and focus it (back from minimized if it was), raising only it, so
+    /// the stack stays in the order of use.
+    fn switch_to(&mut self, w: &Window) {
+        if self.workspaces.is_minimized(w) {
+            tracing::info!("switch to {:?}: bringing back minimized", app_id(w));
         } else {
-            self.set_focus(Some(&next));
+            tracing::info!("switch to {:?}", app_id(w));
+        }
+        self.activate_window(w);
+    }
+
+    /// 16b/16c: what the shell's switcher asks.
+    fn switcher_request(&mut self, req: crate::ipc::SwitcherRequest) {
+        use crate::ipc::SwitcherRequest as R;
+        match req {
+            R::Open => self.start_sticky_switcher(),
+            R::Cancel => self.end_switcher("cancelled in the shell"),
+            R::Select(id) => {
+                let Some(w) = self.window_by_id(id) else { return };
+                if self.switcher.as_mut().is_some_and(|s| s.select(&w)) {
+                    self.send_switcher();
+                }
+            }
+            R::Pick(id) => {
+                let Some(w) = self.window_by_id(id) else { return };
+                if self.switcher.as_mut().is_some_and(|s| s.select(&w) || s.selected() == &w) {
+                    self.switcher_commit("clicked");
+                }
+            }
         }
     }
 
@@ -2039,6 +2194,7 @@ impl Kompact {
         let focused = self
             .focused_window()
             .or_else(|| keyboard_on_layer.then(|| self.space.elements().last().cloned()).flatten());
+        let dock_bar = self.dock_bar_global();
         let info = |w: &Window, workspace: usize, minimized: bool| {
             let fullscreen = w
                 .toplevel()
@@ -2053,6 +2209,11 @@ impl Kompact {
                 maximized: !fullscreen && self.is_filled(w),
                 fullscreen,
                 output: self.place_on_output(w).map(|(name, _)| name).unwrap_or_default(),
+                // 16d: parked windows aren't on screen; the frame includes kompact's title bar.
+                over_dock: !minimized
+                    && workspace == active
+                    && self.space.element_location(w).is_some()
+                    && dock_bar.is_some_and(|bar| self.current_rect(w).overlaps(bar)),
             }
         };
         let mut out: Vec<_> = self.space.elements().map(|w| info(w, active, false)).collect();
@@ -2074,6 +2235,18 @@ impl Kompact {
                 crate::ipc::Placed { id: window_id(w), x: loc.x, y: loc.y, w: size.w, h: size.h }
             })
             .collect()
+    }
+
+    /// 16d: the dock's bar at rest (`dock-bar`), in global coordinates; `None` without a dock.
+    fn dock_bar_global(&self) -> Option<Rectangle<i32, Logical>> {
+        let bar = self.dock_bar?;
+        self.outputs.iter().find_map(|o| {
+            let map = layer_map_for_output(o);
+            let layer = map.layers().find(|l| l.namespace() == "kompact-dock")?;
+            let g = map.layer_geometry(layer)?;
+            let og = self.space.output_geometry(o)?;
+            Some(Rectangle::new(og.loc + g.loc + bar.loc, bar.size))
+        })
     }
 
     pub fn window_by_id(&self, id: u64) -> Option<Window> {
@@ -2152,6 +2325,7 @@ impl Kompact {
                 self.shut_down("log out requested by the shell");
             }
             Request::Shot { x, y, w, h } => self.region_shot(x, y, w, h),
+            Request::Switcher(r) => self.switcher_request(r),
             Request::Keys(k) => self.keys_request(k),
             Request::Set(None) => self.send_settings(None),
             Request::KeyboardLayout(n) => self.choose_layout(n),
@@ -2168,6 +2342,10 @@ impl Kompact {
             Request::DockIcons { size, icons } => {
                 tracing::debug!("dock icons: {} windows, size {size}", icons.len());
                 self.dock_icons = (size, icons.into_iter().map(|(id, x, y)| (id, (x, y))).collect());
+            }
+            Request::DockBar { x, y, w, h } => {
+                tracing::info!("dock: bar at {x},{y} {w}x{h} (in its surface)");
+                self.dock_bar = Some(Rectangle::new((x, y).into(), (w, h).into()));
             }
             Request::DockSide(side) => {
                 if self.dock_side != side {
@@ -2424,6 +2602,7 @@ impl Kompact {
         for req in self.ipc.read_requests() {
             self.handle_shell_request(req);
         }
+        self.switcher_tick();
         // 9c: tell the shell about written screenshots (it shows a banner); 10d-4: unless
         // Settings → Screenshots turned the banner off.
         for saved in self.shots.take_saved() {

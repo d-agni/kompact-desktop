@@ -263,7 +263,7 @@ pub fn is_super_key(sym: u32) -> bool {
 }
 
 /// A modifier's own key (pressing it alone isn't a combination).
-fn is_modifier_sym(sym: u32) -> bool {
+pub fn is_modifier_sym(sym: u32) -> bool {
     // Shift_L … Hyper_R, ISO_Level3_Shift and friends.
     (0xffe1..=0xffee).contains(&sym) || (0xfe01..=0xfe0f).contains(&sym)
 }

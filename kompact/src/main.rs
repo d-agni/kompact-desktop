@@ -33,6 +33,7 @@ mod shell_supervisor;
 mod snap;
 mod state;
 mod stats;
+mod switcher;
 mod theme;
 mod thumbnail;
 mod title_text;

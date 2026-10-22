@@ -92,6 +92,8 @@ pub struct Kompact {
     /// 11a: dock icon size and each window's icon centre in the dock surface (`dock-icons`).
     pub dock_icons: (i32, std::collections::HashMap<u64, (i32, i32)>),
     pub dock_push: crate::dock_edge::EdgePush,
+    /// 16d: the dock's bar at rest, in the dock surface's coordinates (`dock-bar`).
+    pub dock_bar: Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
     /// 10d-1c: which edge the dock is on (the shell says).
     pub dock_side: crate::dock_edge::Side,
     /// 12f: the mice, touchpads and keyboards libinput has (for the pointer settings), and a
@@ -205,6 +207,8 @@ pub struct Kompact {
     pub key_tap: crate::keymap::Tap,
     /// 10b: the settings app is recording a combination.
     pub key_recorder: crate::keymap::Recorder,
+    /// 16a: the window switcher, while Alt+Tab (or its dock button) has it open.
+    pub switcher: Option<crate::switcher::Session<smithay::desktop::Window>>,
     /// 10a, Show desktop: the windows it minimized, and on which workspace, to bring back.
     pub desktop_shown: Option<(usize, Vec<smithay::desktop::Window>)>,
 }
@@ -428,6 +432,7 @@ impl Kompact {
             anims: Default::default(),
             dock_icons: (50, Default::default()),
             dock_push: Default::default(),
+            dock_bar: None,
             dock_side: Default::default(),
             input_devices: Vec::new(),
             layout_cycle_pending: false,
@@ -482,6 +487,7 @@ impl Kompact {
             keymap,
             key_tap: Default::default(),
             key_recorder: Default::default(),
+            switcher: None,
             desktop_shown: None,
         }
     }

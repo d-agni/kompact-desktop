@@ -25,22 +25,6 @@ pub fn workspace_for_keycode(xkb_keycode: u32) -> Option<usize> {
 
 type Loc = Point<i32, Logical>;
 
-/// 10c: what "next window" (Super+Tab, Alt+Tab) picks: after the focused one, the windows on
-/// screen in stacking order, then this workspace's minimized ones, most recently minimized
-/// first (picking one brings it back, as Alt+Tab does on Windows), wrapping round. With nothing
-/// focused: the first on screen, or (all minimized, e.g. after Show desktop) the last minimized.
-pub fn next_in_cycle<W: PartialEq + Clone>(visible: &[W], minimized_oldest_first: &[W], current: Option<&W>) -> Option<W> {
-    let cycle: Vec<&W> = visible.iter().chain(minimized_oldest_first.iter().rev()).collect();
-    if cycle.is_empty() {
-        return None;
-    }
-    let next = match current.and_then(|c| cycle.iter().position(|w| *w == c)) {
-        Some(i) => cycle[(i + 1) % cycle.len()],
-        None => cycle[0],
-    };
-    Some(next.clone())
-}
-
 /// What the caller has to do to carry out a switch.
 #[derive(Debug, PartialEq)]
 pub struct Switch<W> {
@@ -211,24 +195,6 @@ mod tests {
 
     fn p(x: i32, y: i32) -> Loc {
         Point::from((x, y))
-    }
-
-    #[test]
-    fn next_window_includes_minimized() {
-        // On screen a, b; minimized c then d (d most recently).
-        let (vis, min) = (["a", "b"], ["c", "d"]);
-        assert_eq!(next_in_cycle(&vis, &min, Some(&"a")), Some("b"));
-        assert_eq!(next_in_cycle(&vis, &min, Some(&"b")), Some("d"));
-        assert_eq!(next_in_cycle(&vis, &min, Some(&"d")), Some("c"));
-        assert_eq!(next_in_cycle(&vis, &min, Some(&"c")), Some("a"));
-        assert_eq!(next_in_cycle(&vis, &min, None), Some("a"));
-        // Everything minimized (Show desktop): the last minimized comes back first.
-        assert_eq!(next_in_cycle::<&str>(&[], &min, None), Some("d"));
-        // A single window minimized, nothing else: Alt+Tab brings it back.
-        assert_eq!(next_in_cycle::<&str>(&[], &["c"], None), Some("c"));
-        assert_eq!(next_in_cycle::<&str>(&[], &[], None), None);
-        // As before without minimized windows.
-        assert_eq!(next_in_cycle(&vis, &[], Some(&"b")), Some("a"));
     }
 
     #[test]
