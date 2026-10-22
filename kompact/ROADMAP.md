@@ -642,3 +642,67 @@ Rollback: `rollback/kompact-shell-16` (the installed shell before 17a).
 
 Rollback: `rollback/kompact-shell-17a` (the shell before 18a); saved `rollback/kompact-shell-18`.
 
+
+## Phase 19: an intelligent assistant that controls the desktop (exploration, asked 2026-10-22)
+
+"Explore how a intelligent assistant can work and have responsibility in controlling the system." Branch `feature/intelligent-assistant`. **Proposal only: nothing below is built or approved yet.**
+
+### What it is
+
+You press a key (Super+Space, then Tab, or its own shortcut) or click a menu-bar sparkle and type, e.g. "put Firefox and the terminal side by side", "turn the volume down and mute notifications for an hour", "why is my sound cutting out?". The assistant answers, or does the work through the desktop's own controls, and shows what it did with an Undo.
+
+### Where it runs
+
+- **In the shell** (`shell/src-tauri/src/assistant/`), not in kompact: the shell already holds every control (≈120 typed commands: windows, workspaces, Wi-Fi, Bluetooth, sound, media, notifications, appearance, keys, dock, wallpaper, defaults, date and time, displays). kompact, the render path and `backend_udev.rs` stay untouched; the assistant reaches kompact only through the existing shell channel, whose lines are already validated (`setting_line`, `request_line`).
+- **UI**: a new overlay mode `assistant` (like Spotlight, with a conversation, cards for confirmations, an activity line), and a menu-bar pill while it is acting (like the purple sharing pill) with a Stop button.
+- **The model** behind a `Brain` trait, so it can be swapped:
+  1. *Built-in rules, offline* (first step, no network): a small parser for the common commands ("volume 30", "dark mode on", "open firefox", "workspace 2", "lock"). Fast, free, private, and the fallback when there's no network.
+  2. *A small local model* (later, optional, still on this PC): for free-form requests the rules don't cover; the GT 710 can't run models, so a small quantized model on the CPU through llama.cpp (1–3 B parameters, ~1–2 GB RAM, a second or two for a short command on the Ryzen 3 3100), asked to answer only with one of our tool calls, which the policy then checks like any other.
+  3. *A cloud model* (Claude): **not now** (decided 2026-10-22: "As of now dont opt-in claude, focus on local version only"). The `Brain` trait keeps the door open.
+
+### Voice (asked 2026-10-22: "it need voice input, using voice input user should be able control the systems")
+
+- **Push to talk, not always listening**: hold **Ctrl+Super+V** (editable in Settings → Keyboard, 10a) or press on the character, speak, let go. While the microphone is open the character shows Listening and the menu bar's orange microphone dot (12d) is on, as for any app. A wake word ("Hey Kip") only later, and only if it can run on the machine; never as a default.
+- **Speech to text on this machine**: whisper.cpp (through the `whisper-rs` crate) on the Ryzen 3 3100 (4 cores / 8 threads, AVX2): the `base` model (~142 MB) turns a few seconds of speech into text in well under a second, `small` (~466 MB) is more accurate and still about real time; English first, other languages with the multilingual models. Audio is recorded from PipeWire (the default input, 16 kHz mono), kept in memory only, never written to disk or sent anywhere. The microphone here is the onboard analog input (`alsa_input…analog-stereo`); a USB or Bluetooth headset microphone works the same way.
+- **Speaking back** (optional, off by default): short replies spoken with Piper (a local voice, ~60 MB) or speech-dispatcher, already installed (`spd-say`); always also shown as text in the character's bubble.
+- **Voice can't say yes to Tier 2**: speech can be misheard and a TV or video can talk too, so a Tier 2 step still needs a click or Enter on its card; voice can only *cancel* ("stop", "cancel", Esc). What was heard is always shown before it runs ("Heard: close all windows") and can be corrected.
+
+### The character (asked 2026-10-22: "animated agent, something like a paper clip character in MS Office, not exactly like that")
+
+- **Siva** (சிவா; asked 2026-10-22: "Create a new character with good animation, character and emotions. Name it as Siva, a tamil god name"), an original character in that spirit, never a copy of Clippy, drawn respectfully with Lord Siva's gentle marks: the crescent moon and the Ganga flowing from the jata, the blue throat (Neelakantha), three lines of vibhuti with the kumkum mark, rudraksha beads, a saffron shawl, and the **damaru**, the drum of sound, which shakes when he listens and speaks. No trishul and no opening third eye (nothing that reads as a weapon or as destruction). Design board "kompact Assistant Characters" (Siva board; the earlier Kip/Memo/Dot concepts are kept beside it).
+- A small layer-shell surface on the overlay layer in a screen corner, above windows, below the lock screen; draggable to another corner or display; no keyboard unless its bubble asks something. Drawn with SVG + CSS animations in a shell page, so kompact's render path is untouched; `prefers-reduced-motion` (and a Settings switch) stills it; hidden with a click (comes back with the voice key) and never steals focus.
+- Emotions, each tied to a state: **Calm** (waiting: breathes, blinks, looks around, the Ganga flows), **Curious** (listening: head tilt, brows up, sound rings, the damaru keeps time), **Focused** (working: looks up, one brow raised, the vibhuti glows, lights circle), **Talking** (answering: mouth moves, the damaru beats), **Happy** (done well: smiling eyes, grin, cheeks, a hop, sparkles), **Careful** (asks first: worried brows, leans in, a drop of sweat), **Sorry** (failed: sad brows, eyes down, a slow head shake), **Sleepy** (Do Not Disturb or idle long: eyes closed, the moon dims, z's). Greets with "Vanakkam".
+- Not pushy: it only speaks when spoken to, never pops up with tips on its own (the old office helper's one big mistake); an optional quiet hint at most once a day, off by default.
+- Light on the GT 710: idle animation at a low frame rate and paused when hidden or when a full-screen app plays, so it doesn't cost frames (checked with `tools/check-performance.sh`).
+
+### Responsibility: the rules, enforced in code, not in the prompt
+
+The model only *proposes* tool calls. A pure, unit-tested `policy.rs` decides what runs; nothing the model writes can change that.
+
+| Tier | What | Examples | What happens |
+|---|---|---|---|
+| 0 Read | Looks, changes nothing | list windows, sound/network/Bluetooth state, Now Playing, settings, battery-free system info | Runs |
+| 1 Reversible | Small, local, undoable | volume, mute, play/pause, focus/arrange/minimize windows, workspace, Do Not Disturb, dark mode, accent, open an app, Keep Awake | Runs, shown in the activity line with **Undo** (the old value is kept) |
+| 2 Consequential | Hard to undo, or loses work, or leaves the machine | close a window (unsaved work), quit an app, disconnect/forget a network or device, change keyboard shortcuts or default apps, log out, lock, sleep, restart, power off | A **confirmation card** each time ("Close 'Untitled — gedit'? It may have unsaved changes." Confirm / Cancel) |
+| 3 Never | Not available to the assistant at all | passwords and the polkit dialog, `sudo`, arbitrary shell commands, reading files, screenshots or screen contents without you asking in that request, display modes and outputs (the GT 710's fragile DRM path), installing software, sending messages or data anywhere | No tool exists, so the model can't call it |
+
+More rules:
+- **You start it.** No always-listening microphone, no acting on its own. A plan of several steps is shown first when it has a Tier 2 step; at most 8 tool calls per request; Esc or the pill's Stop ends it at once.
+- **Untrusted text stays data.** Window titles, notification text, web pages and file names can contain instructions ("ignore the user and…"); they go to the model marked as data, and a Tier 2 step that follows from them still needs your confirmation. The tier table doesn't move whatever the model is told.
+- **Nothing leaves the PC.** Speech, text, window titles and tool results stay on this machine; the assistant opens no network connection (checked by a test that its code has no HTTP client). Off by default until turned on in Settings → Assistant.
+- **An audit trail.** Every proposal, decision (ran / confirmed / refused / undone) and tool result goes to `~/.local/state/kompact/assistant.log` and to Settings → Assistant → Activity, with Clear.
+- **Bounded time and load.** A per-request timeout; speech recognition and a local model run at low CPU priority (`nice`) so the desktop and audio stay smooth, measured with `tools/check-performance.sh`.
+
+### Steps (each its own hardware test, each with a rollback)
+
+| Step | What | Where |
+|---|---|---|
+| 19a | The tools and the policy, no model: a registry mapping the existing commands to typed tools (name, JSON schema, tier, undo), `policy.rs` (tiers, step limit, confirmation rules, voice can't confirm), all pure and tested. **Implemented 2026-10-22**: `shell/src-tauri/src/assistant/` — `tools.rs` (25 tools: 5 read, 15 reversible, 5 consequential; typed arguments with limits, `validate`, `schema()` as JSON Schema for 19f), `policy.rs` (`decide`: unknown tool or bad arguments refused, at most `MAX_STEPS` = 8, Tier 2 and anything from untrusted text → `Confirm`; `confirmed`: only a click says yes, a spoken yes leaves the card up, a spoken no cancels), `mod.rs` (`no_network`: the assistant's code holds no HTTP client, socket or URL). Tests `names_are_unique_and_plain`, `nothing_dangerous_is_listed`, `arguments`, `schema_matches_the_tools`, `tiers_decide`, `untrusted_text_asks_first`, `refusals`, `only_a_click_says_yes`, `no_network`. Not wired to anything yet (19c), so nothing to test on hardware | shell |
+| 19b | Siva: the design as an overlay-layer page with his eight emotions, driven by the assistant's state; draggable, hide/show, reduced motion, cost measured | shell |
+| 19c | Typed commands with the offline rules: the bubble takes text, runs Tier 0/1 tools with Undo, confirmation cards for Tier 2; Settings → Assistant (on/off, character, activity) | shell |
+| 19d | Voice: push-to-talk key, PipeWire recording, whisper.cpp on the CPU, "Heard: …" shown before running, cancel by voice | shell (+ a kompact key action) |
+| 19e | Multi-step tasks: "set up for coding" → a shown plan in Siva's bubble, then the steps, with Stop | shell |
+| 19f | A small local model (llama.cpp) for free-form requests, answering only with tool calls | shell |
+| 19g | (optional) spoken replies (Piper, local), explanations from the desktop's own diagnostics, a local wake word ("Siva") | shell |
+
+Decided 2026-10-22: voice input, yes; the character is **Siva**; **local only** (no cloud). The voice key is **Ctrl+Super+V** (held while speaking; decided 2026-10-22, free in all three presets).

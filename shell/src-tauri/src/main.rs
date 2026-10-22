@@ -16,6 +16,7 @@
 //! 6m-b: the logo menu (About, Restart Shell, Restart…/Shut Down…) is a third overlay view.
 
 mod apps;
+mod assistant;
 mod blur;
 mod bluetooth;
 mod calc;
