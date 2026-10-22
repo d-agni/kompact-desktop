@@ -127,6 +127,7 @@ fn main() {
         .manage(compositor::Compositor::default())
         .manage(power::LockWatch::default())
         .manage(screensaver::ScreenSaver::default())
+        .manage(assistant::run::Assistant::default())
         .manage(thumbs::Thumbs::default())
         .manage(notify::Notifications::new())
         .manage(wallpapers)
@@ -225,6 +226,10 @@ fn main() {
             assistant::siva::siva_corner,
             assistant::siva::siva_show,
             assistant::siva::siva_motion,
+            assistant::siva::siva_keyboard,
+            assistant::run::assistant_ask,
+            assistant::run::assistant_answer,
+            assistant::run::assistant_undo,
             screensaver::set_keep_awake,
             sound::osd_state,
             sound::osd_hide,

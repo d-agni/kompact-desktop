@@ -276,6 +276,20 @@ pub fn siva_show(app: AppHandle, on: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 19c: the keyboard while his bubble takes typing (Exclusive, as the overlay does), and back
+/// to none after, so the window that had it gets it again.
+#[tauri::command]
+pub fn siva_keyboard(app: AppHandle, on: bool) -> Result<(), String> {
+    use gtk_layer_shell::{KeyboardMode, LayerShell};
+    let window = app.get_webview_window(LABEL).ok_or("no siva window")?;
+    let gtk_window = window.gtk_window().map_err(|e| e.to_string())?;
+    gtk_window.set_keyboard_mode(if on { KeyboardMode::Exclusive } else { KeyboardMode::None });
+    if on {
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn siva_motion(app: AppHandle, less: bool) {
     set_prefs(Prefs { less_motion: less, ..prefs() });

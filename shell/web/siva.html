@@ -7,7 +7,15 @@
 </head>
 <body class="right">
   <!-- 19b: Siva, the desktop's assistant (src-tauri/src/assistant/siva.rs). -->
-  <div id="bubble" class="bubble" role="status" aria-live="polite" hidden></div>
+  <div id="bubble" class="bubble" hidden>
+    <div id="bubble-text" role="status" aria-live="polite"></div>
+    <!-- 19c: typing a request -->
+    <form id="ask" class="ask" hidden autocomplete="off">
+      <label for="ask-input" class="ask-label">What can I do for you?</label>
+      <input id="ask-input" type="text" maxlength="300" placeholder="Try “volume 30” or “help”" spellcheck="false">
+    </form>
+    <div id="bubble-buttons" class="bubble-buttons" hidden></div>
+  </div>
   <div id="menu" class="menu" role="menu" hidden>
     <button role="menuitem" data-act="moods">Show my moods</button>
     <div class="menu-label">Move to</div>
@@ -20,7 +28,7 @@
     <button role="menuitem" data-act="motion" id="menu-motion">Less movement</button>
     <button role="menuitem" data-act="hide">Hide Siva</button>
   </div>
-  <div id="siva" class="siva" aria-label="Siva" title="Siva: click to say hello, right-click for more, drag to move">
+  <div id="siva" class="siva" aria-label="Siva" title="Siva: click to ask me something, right-click for more, drag to move">
     <svg id="figure-svg" class="e-idle" width="132" height="140" viewBox="0 0 320 340" aria-hidden="true">
       <defs>
         <mask id="sivaMoonCut">

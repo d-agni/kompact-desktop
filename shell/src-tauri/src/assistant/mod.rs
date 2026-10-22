@@ -10,6 +10,8 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod policy;
+pub mod rules;
+pub mod run;
 pub mod siva;
 pub mod tools;
 
@@ -18,7 +20,7 @@ mod tests {
     /// The assistant's code has no way to reach the network: no HTTP client, socket or URL.
     #[test]
     fn no_network() {
-        let sources = [("mod.rs", include_str!("mod.rs")), ("tools.rs", include_str!("tools.rs")), ("policy.rs", include_str!("policy.rs")), ("siva.rs", include_str!("siva.rs"))];
+        let sources = [("mod.rs", include_str!("mod.rs")), ("tools.rs", include_str!("tools.rs")), ("policy.rs", include_str!("policy.rs")), ("siva.rs", include_str!("siva.rs")), ("rules.rs", include_str!("rules.rs")), ("run.rs", include_str!("run.rs"))];
         // Spelled in pieces so this list doesn't match itself.
         let banned = [["req", "west"], ["ure", "q::"], ["hy", "per"], ["Tcp", "Stream"], ["Udp", "Socket"], ["http", "://"], ["https", "://"]];
         for (file, text) in sources {

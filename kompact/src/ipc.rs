@@ -30,7 +30,8 @@
 //! 16b/16c, the window switcher (`switcher.rs`): kompact sends `{"type":"switcher","open":true,
 //! "sticky":false,"windows":[3,5,1],"selected":1}` (window ids in the order shown) when it
 //! appears and whenever the list or selection changes, and `{"type":"switcher","open":false}` when
-//! it ends. The shell asks `switcher open` (the dock's button), `switcher select <id>` (the pointer
+//! it ends. 19c: `place <id> left|right|fill|restore` (Siva puts a window somewhere, as the snap
+//! keys would). The shell asks `switcher open` (the dock's button), `switcher select <id>` (the pointer
 //! is on a card), `switcher pick <id>` (clicked) and `switcher cancel`.
 //!
 //! Encoding and parsing are pure and tested here; the socket work is non-blocking and runs from
@@ -113,6 +114,18 @@ pub enum Request {
     KeepAwake(Vec<String>),
     /// 16b/16c: the window switcher.
     Switcher(SwitcherRequest),
+    /// 19c: `place <id> left|right|fill|restore`: the shell's assistant (Siva) puts a window
+    /// on a half of the screen, fills it, or restores it, as the snap keys would.
+    Place { id: u64, to: PlaceTo },
+}
+
+/// 19c: where `place` puts a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceTo {
+    Left,
+    Right,
+    Fill,
+    Restore,
 }
 
 /// 16b/16c: what the shell asks of the window switcher.
@@ -352,6 +365,21 @@ pub fn parse_request(line: &str) -> Option<Request> {
             "off" => Request::DockFollow(false),
             _ => return None,
         },
+        "place" => {
+            let rest: Vec<&str> = words.by_ref().collect();
+            let (id, to) = match rest[..] {
+                [id, to] => (id.parse().ok()?, to),
+                _ => return None,
+            };
+            let to = match to {
+                "left" => PlaceTo::Left,
+                "right" => PlaceTo::Right,
+                "fill" => PlaceTo::Fill,
+                "restore" => PlaceTo::Restore,
+                _ => return None,
+            };
+            return Some(Request::Place { id, to });
+        }
         "switcher" => {
             let rest: Vec<&str> = words.by_ref().collect();
             let req = match rest[..] {
@@ -732,6 +760,12 @@ mod tests {
         assert_eq!(parse_request("activate 3"), Some(Request::Activate(3)));
         assert_eq!(parse_request(" close 12 "), Some(Request::Close(12)));
         assert_eq!(parse_request("minimize 1"), Some(Request::Minimize(1)));
+        // 19c
+        assert_eq!(parse_request("place 4 left"), Some(Request::Place { id: 4, to: PlaceTo::Left }));
+        assert_eq!(parse_request("place 4 restore"), Some(Request::Place { id: 4, to: PlaceTo::Restore }));
+        assert_eq!(parse_request("place 4 sideways"), None);
+        assert_eq!(parse_request("place left"), None);
+        assert_eq!(parse_request("place 4 fill extra"), None);
         assert_eq!(parse_request("logout"), Some(Request::Logout));
         assert_eq!(parse_request("thumb 12"), Some(Request::Thumb(12)));
         assert_eq!(parse_request("thumb"), None);

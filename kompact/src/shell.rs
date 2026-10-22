@@ -89,6 +89,10 @@ const TILED: [xdg_toplevel::State; 4] = [
 /// is only known once the client has committed its first buffer, so mapping and placing are split.
 struct PlacementPending(AtomicBool);
 
+/// 19c: a `place` that came before the window was placed (Siva opened the app and placed it
+/// straight away); applied right after its first placement, which would otherwise move it back.
+struct QueuedPlace(std::sync::Mutex<Option<crate::ipc::PlaceTo>>);
+
 impl Kompact {
     /// The output containing `pos`, if any.
     pub fn output_at(&self, pos: Point<f64, Logical>) -> Option<&Output> {
@@ -1926,6 +1930,35 @@ impl Kompact {
         }
     }
 
+    /// 19c: the shell's assistant put this window somewhere (`place <id> …`), as the snap and
+    /// fill keys would, animated like them.
+    pub fn place_to(&mut self, window: &Window, to: crate::ipc::PlaceTo) {
+        use crate::ipc::PlaceTo;
+        if window.user_data().get::<PlacementPending>().is_some_and(|p| p.0.load(Ordering::Relaxed)) {
+            window.user_data().insert_if_missing(|| QueuedPlace(std::sync::Mutex::new(None)));
+            if let Some(q) = window.user_data().get::<QueuedPlace>() {
+                *q.0.lock().unwrap() = Some(to);
+            }
+            tracing::info!("assistant: window not placed yet, {to:?} once it is");
+            return;
+        }
+        let from = self.move_from(window);
+        match to {
+            PlaceTo::Left => self.snap_to(window, Region::Left),
+            PlaceTo::Right => self.snap_to(window, Region::Right),
+            PlaceTo::Fill if !self.is_filled(window) => self.set_fill(window, true, false),
+            PlaceTo::Fill => {}
+            PlaceTo::Restore if self.is_filled(window) => self.set_fill(window, false, false),
+            PlaceTo::Restore => {
+                if let Some(r) = self.unsnap(window) {
+                    self.place_window(window, r.loc, false);
+                }
+            }
+        }
+        self.move_to(window, from);
+        tracing::info!("assistant: placed window {:?}", to);
+    }
+
     pub fn toggle_fill_focused(&mut self) {
         if let Some(w) = self.focused_window() {
             let on = !self.is_filled(&w);
@@ -1948,8 +1981,21 @@ pub fn map_new_window(state: &mut Kompact, window: Window) {
 }
 
 /// Called on every toplevel commit. On the first commit that gives the window a real size, run
-/// smart placement once and move it there. No-op for every later commit.
+/// smart placement once and move it there (then a `place` that was waiting for it, 19c). No-op
+/// for every later commit.
 pub fn place_if_pending(state: &mut Kompact, window: &Window) {
+    let pending = |w: &Window| w.user_data().get::<PlacementPending>().is_some_and(|p| p.0.load(Ordering::Relaxed));
+    let was = pending(window);
+    place_pending_now(state, window);
+    if was && !pending(window) {
+        let queued = window.user_data().get::<QueuedPlace>().and_then(|q| q.0.lock().unwrap().take());
+        if let Some(to) = queued {
+            state.place_to(window, to);
+        }
+    }
+}
+
+fn place_pending_now(state: &mut Kompact, window: &Window) {
     let Some(pending) = window.user_data().get::<PlacementPending>() else { return };
     if !pending.0.load(Ordering::Relaxed) {
         return;
@@ -2305,6 +2351,12 @@ impl Kompact {
             Request::Minimize(id) => {
                 if let Some(w) = window(self, id) {
                     self.minimize_window(&w);
+                }
+            }
+            Request::Place { id, to } => {
+                if let Some(w) = window(self, id) {
+                    self.activate_window(&w);
+                    self.place_to(&w, to);
                 }
             }
             Request::Thumb(id) => self.thumbs.request(id),
