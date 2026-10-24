@@ -19,13 +19,15 @@ const heardEl = $("heard");
 const replyEl = $("reply");
 const buttonsEl = $("buttons");
 const micEl = $("mic");
+const planEl = $("plan");
 const typeForm = /** @type {HTMLFormElement} */ ($("type"));
 const typeInput = /** @type {HTMLInputElement} */ ($("type-input"));
 const canvas = /** @type {HTMLCanvasElement} */ ($("wave"));
 const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext("2d"));
 
 /** @typedef {"hidden" | "waking" | "listening" | "thinking" | "reply" | "typing"} State */
-/** @typedef {{text: string, mood: string, undo: number | null, confirm: {id: number, text: string, button: string} | null}} Reply */
+/** @typedef {{text: string, state: string}} PlanItem */
+/** @typedef {{text: string, mood: string, undo: number | null, confirm: {id: number, text: string, button: string} | null, plan?: PlanItem[] | null}} Reply */
 
 /** @type {State} */
 let state = "hidden";
@@ -44,7 +46,7 @@ const STATUS = /** @type {Record<string, string>} */ ({ speaking: "", happy: "DO
 /** @param {State} s @param {string} status */
 function setState(s, status) {
   state = s;
-  document.body.className = `s-${s}${speaking ? " talking" : ""}`;
+  document.body.className = `s-${s}${speaking ? " talking" : ""}${planEl.childElementCount ? " planning" : ""}`;
   hud.hidden = s === "hidden";
   statusEl.textContent = status;
   animate();
@@ -68,8 +70,23 @@ function keyboard(/** @type {boolean} */ on) {
   return invoke("hud_keyboard", { on });
 }
 
+/** 19e: the plan's lines. @param {PlanItem[] | null | undefined} items */
+function renderPlan(items) {
+  planEl.replaceChildren(
+    ...(items || []).map((it) => {
+      const li = document.createElement("li");
+      li.className = it.state;
+      li.textContent = it.text;
+      return li;
+    }),
+  );
+  document.body.classList.toggle("planning", planEl.childElementCount > 0);
+  updateInput();
+}
+
 function reset() {
   clearHide();
+  renderPlan(null);
   heardEl.textContent = "";
   replyEl.textContent = "";
   buttonsEl.replaceChildren();
@@ -121,6 +138,7 @@ function showReply(r) {
   if (r.mood === "idle" && !r.text) return close();
   document.body.dataset.mood = r.mood;
   replyEl.textContent = r.text;
+  if (r.plan) renderPlan(r.plan);
   buttonsEl.replaceChildren();
   card = 0;
   const c = r.confirm;
@@ -150,7 +168,7 @@ function showReply(r) {
     );
   }
   setState("reply", STATUS[r.mood] ?? "");
-  hideIn((r.text.length > 90 ? 9000 : 6000) + (undoId != null ? 3000 : 0));
+  hideIn((r.text.length > 90 ? 9000 : 6000) + (undoId != null ? 3000 : 0) + planEl.childElementCount * 600);
 }
 
 /** @param {number} id @param {boolean} yes */
@@ -187,6 +205,10 @@ function close() {
 
 $("close").addEventListener("click", close);
 $("done").addEventListener("click", () => invoke("voice_stop"));
+$("stop").addEventListener("click", () => {
+  statusEl.textContent = "STOPPING";
+  invoke("assistant_stop");
+});
 $("speak").addEventListener("click", () => void listen());
 $("kbd").addEventListener("click", () => void openType());
 hud.addEventListener("pointerenter", () => (hovering = true));
@@ -310,6 +332,10 @@ if (tauri) {
       heardEl.textContent = `“${detail}”`;
       setState("thinking", "WORKING");
     }
+  });
+  // 19e: each step of a plan as it goes.
+  tauri.event.listen("kompact-assistant-plan", (/** @type {{payload: PlanItem[]}} */ e) => {
+    if (state === "thinking") renderPlan(e.payload);
   });
   tauri.event.listen("kompact-assistant-level", (/** @type {{payload: number}} */ e) => {
     target = Math.max(0, Math.min(1, Number(e.payload) || 0));

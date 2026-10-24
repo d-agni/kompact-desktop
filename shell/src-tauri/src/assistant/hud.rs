@@ -12,7 +12,7 @@ use tracing::info;
 pub const LABEL: &str = "assistant";
 /// The surface: room for the ring, the wave, what was heard, the reply and its buttons.
 pub const WIDTH: i32 = 460;
-pub const HEIGHT: i32 = 360;
+pub const HEIGHT: i32 = 520;
 /// From the top-right corner of the area under the menu bar.
 pub const MARGIN_TOP: i32 = 6;
 pub const MARGIN_RIGHT: i32 = 10;

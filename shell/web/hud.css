@@ -56,6 +56,21 @@ body[data-mood="concerned"] { --accent: #ff7a5c; --accent-soft: rgba(255, 122, 9
 
 .heard { margin: 10px 2px 0; font-size: 15px; color: var(--accent); min-height: 0; overflow-wrap: anywhere; }
 .heard:empty { display: none; }
+
+/* 19e: the plan */
+.plan { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.plan:empty { display: none; }
+.plan li { display: flex; align-items: center; gap: 8px; color: rgba(223, 246, 255, 0.55); }
+.plan li::before { content: ""; flex: 0 0 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; box-sizing: border-box; }
+.plan li.now { color: #f3fbff; }
+.plan li.now::before { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 6px var(--accent); animation: breathe 0.9s ease-in-out infinite; }
+.plan li.done { color: #c9efff; }
+.plan li.done::before { content: "✓"; border: 0; height: auto; color: var(--accent); font-size: 11px; line-height: 1; }
+.plan li.failed { color: #ffb340; }
+.plan li.failed::before { content: "✕"; border: 0; height: auto; font-size: 10px; line-height: 1; }
+.plan li.asks { color: #ff7a5c; }
+.plan li.asks::before { background: #ff7a5c; border-color: #ff7a5c; }
+.plan li.stopped { color: rgba(223, 246, 255, 0.35); text-decoration: line-through; }
 .reply { margin: 6px 2px 0; font-size: 15px; line-height: 1.45; color: #f3fbff; overflow-wrap: anywhere; max-height: 150px; overflow-y: auto; }
 .reply:empty { display: none; }
 
@@ -101,7 +116,8 @@ body[data-mood="concerned"] { --accent: #ff7a5c; --accent-soft: rgba(255, 122, 9
 .mic { flex: 1; min-width: 0; font-size: 11px; color: rgba(223, 246, 255, 0.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pill { padding: 3px 11px; font-size: 11.5px; }
 /* Done only while listening; Speak and Type the rest of the time. */
-#done { display: none; }
+#done, #stop { display: none; }
+.s-thinking.planning #stop { display: inline-flex; }
 .s-waking #done, .s-listening #done { display: inline-flex; }
 .s-waking #speak, .s-listening #speak, .s-thinking #speak, .s-waking #kbd, .s-listening #kbd, .s-thinking #kbd, .s-typing #kbd { display: none; }
 .s-hidden .hud { display: none; }

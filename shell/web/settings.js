@@ -683,6 +683,7 @@ function asCall(cmd, args) {
 }
 
 async function loadAssistant() {
+  void loadRoutines();
   const [list, v, sp] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state")]);
   activity = list || [];
   voice = v;
@@ -748,6 +749,73 @@ function renderActivity() {
   if (!activity.length) list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: "Nothing yet. What you ask Siva shows up here." }));
   /** @type {HTMLButtonElement} */ ($("as-clear")).disabled = !activity.length;
 }
+
+// ---- 19e: routines ----
+
+/** @typedef {{name: string, phrases: string[]}} RoutineDef */
+
+async function loadRoutines() {
+  /** @type {RoutineDef[]} */
+  const list = (await asCall("routines_state")) || [];
+  renderRoutines(list, []);
+  $("as-rt-status").textContent = "";
+}
+
+/** @param {RoutineDef[]} list @param {{index: number, text: string}[]} problems */
+function renderRoutines(list, problems) {
+  $("as-routines").replaceChildren(...list.map((r, i) => routineCard(r, problems.find((p) => p.index === i)?.text || "")));
+}
+
+/** @param {RoutineDef} r @param {string} problem */
+function routineCard(r, problem) {
+  const card = Object.assign(document.createElement("section"), { className: "card as-rt" });
+  const row = Object.assign(document.createElement("div"), { className: "row" });
+  const name = Object.assign(document.createElement("input"), { className: "text-field as-rt-name", type: "text", value: r.name, maxLength: 40, placeholder: "Name, e.g. coding", spellcheck: false });
+  name.setAttribute("aria-label", "Routine name");
+  const del = Object.assign(document.createElement("button"), { className: "btn", type: "button", textContent: "Delete" });
+  del.addEventListener("click", () => {
+    card.remove();
+    $("as-rt-status").textContent = "Not saved yet.";
+  });
+  row.append(name, del);
+  const steps = Object.assign(document.createElement("textarea"), { value: r.phrases.join("\n"), placeholder: "One request a line, e.g.\nopen terminal\nopen firefox\nput terminal and firefox side by side", spellcheck: false });
+  steps.setAttribute("aria-label", `Requests of ${r.name || "the routine"}, one a line`);
+  const note = Object.assign(document.createElement("div"), { className: "note", textContent: problem });
+  card.append(row, steps, note);
+  return card;
+}
+
+/** What the cards say now. @returns {RoutineDef[]} */
+function routinesOnScreen() {
+  return [...document.querySelectorAll("#as-routines .as-rt")].map((card) => ({
+    name: /** @type {HTMLInputElement} */ (card.querySelector(".as-rt-name")).value,
+    phrases: /** @type {HTMLTextAreaElement} */ (card.querySelector("textarea")).value.split("\n").map((l) => l.trim()).filter(Boolean),
+  }));
+}
+
+$("as-rt-add").addEventListener("click", () => {
+  const card = routineCard({ name: "", phrases: [] }, "");
+  $("as-routines").append(card);
+  /** @type {HTMLInputElement} */ (card.querySelector(".as-rt-name")).focus();
+});
+$("as-rt-save").addEventListener("click", async () => {
+  if (!tauri) return;
+  const list = routinesOnScreen();
+  const status = $("as-rt-status");
+  try {
+    /** @type {RoutineDef[]} */
+    const saved = await tauri.core.invoke("routines_save", { routines: list });
+    renderRoutines(saved, []);
+    status.classList.remove("error");
+    status.textContent = `Saved ${saved.length} routine${saved.length === 1 ? "" : "s"}.`;
+  } catch (e) {
+    // Which routine is wrong, and how (nothing was saved).
+    const problems = Array.isArray(e) ? e : [{ index: 0, text: String(e) }];
+    renderRoutines(list, problems);
+    status.classList.add("error");
+    status.textContent = "Not saved: see the routines marked in red.";
+  }
+});
 
 $("as-speak").addEventListener("change", async (e) => {
   const st = await asCall("set_speak", { speak: /** @type {HTMLSelectElement} */ (e.target).value });

@@ -27,6 +27,8 @@
       </button>
     </div>
     <div id="heard" class="heard"></div>
+    <!-- 19e: a request of several steps, live -->
+    <ol id="plan" class="plan" aria-label="Plan"></ol>
     <div id="reply" class="reply" aria-live="polite"></div>
     <form id="type" class="type" hidden autocomplete="off">
       <input id="type-input" type="text" maxlength="300" placeholder="Try “volume 30” or “help”" spellcheck="false" aria-label="Ask Siva">
@@ -35,6 +37,7 @@
     <div class="foot">
       <span id="mic" class="mic"></span>
       <button id="done" class="pill" type="button" title="Done speaking">Done</button>
+      <button id="stop" class="pill" type="button" title="Stop before the next step">Stop</button>
       <button id="speak" class="pill" type="button" title="Speak again">
         <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5" fill="currentColor"/><path d="M3.2 7.5a4.8 4.8 0 0 0 9.6 0M8 12.3V14.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
         Speak

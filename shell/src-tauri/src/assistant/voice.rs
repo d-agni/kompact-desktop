@@ -30,6 +30,11 @@ pub const MAX_GAIN: f64 = 20.0;
 pub const MODELS: [&str; 3] = ["small.en", "base.en", "tiny.en"];
 /// Words he's likely to hear, so whisper spells them our way.
 const PROMPT: &str = "Siva, volume, mute, unmute, Firefox, Files, terminal, desktop, Do Not Disturb, dark mode, light mode, side by side, Bluetooth, Wi-Fi, screenshot.";
+/// `PROMPT` and (19e) the routines' names, so "set up for coding" is spelled as saved.
+fn prompt() -> String {
+    let names: Vec<String> = super::routines::load().into_iter().map(|r| r.name).collect();
+    if names.is_empty() { PROMPT.to_string() } else { format!("{PROMPT} Set up for {}.", names.join(", ")) }
+}
 /// Threads for whisper (the Ryzen 3 3100 has 8; the desktop and the sound keep the rest).
 const THREADS: &str = "4";
 
@@ -416,7 +421,7 @@ pub fn transcribe(pcm: &[u8]) -> Result<Option<String>, String> {
     let mut child = Command::new("nice")
         .args(["-n", "10", "whisper-cli", "-m"])
         .arg(&model)
-        .args(["-t", THREADS, "-l", "en", "-np", "-nt", "-otxt", "-ac", &audio_ctx(ms).to_string(), "--prompt", PROMPT, "-f", "-"])
+        .args(["-t", THREADS, "-l", "en", "-np", "-nt", "-otxt", "-ac", &audio_ctx(ms).to_string(), "--prompt", &prompt(), "-f", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -595,3 +595,12 @@ label.row { cursor: default; }
 .as-when { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .as-asked .row-label, .as-heard .row-label { font-weight: 600; }
 .as-failed .hint, .as-refused .hint { color: var(--error); }
+/* 19e: routines */
+.as-rt-sub { margin: 0 4px 8px; }
+.as-rt .row { gap: 8px; }
+.as-rt .text-field.as-rt-name { width: auto; max-width: none; flex: 1; font-weight: 600; }
+.as-rt textarea { display: block; box-sizing: border-box; width: calc(100% - 24px); margin: 0 12px 10px; min-height: 64px; resize: vertical; font: inherit; color: var(--fg); background: var(--key); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; line-height: 1.5; }
+.as-rt textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
+.as-rt .note { color: var(--error); font-size: 12px; margin: -4px 12px 10px; }
+.as-rt .note:empty { display: none; }
+.as-rt-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 0 0 4px; }

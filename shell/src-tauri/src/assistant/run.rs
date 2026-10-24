@@ -119,6 +119,67 @@ pub struct Reply {
     /// An Undo button for what was done.
     pub undo: Option<u64>,
     pub confirm: Option<Card>,
+    /// 19e: a request of several steps, each with how it went.
+    pub plan: Option<Vec<PlanItem>>,
+}
+
+/// 19e: one line of a plan: `todo`, `now`, `done`, `failed`, `asks` (waits on a card),
+/// `stopped`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanItem {
+    pub text: String,
+    pub state: &'static str,
+}
+
+/// 19e: the plan of a request of two steps or more, shown live in the HUD
+/// (`kompact-assistant-plan`). One step: no plan.
+struct Plan<'a> {
+    app: &'a AppHandle,
+    items: Vec<PlanItem>,
+}
+
+impl<'a> Plan<'a> {
+    /// Steps before `at` were done before (a request picked up again after its card).
+    fn new(app: &'a AppHandle, steps: &[Step], at: usize) -> Plan<'a> {
+        let items = if steps.len() < 2 {
+            Vec::new()
+        } else {
+            steps.iter().enumerate().map(|(i, s)| PlanItem { text: rules::describe(s), state: if i < at { "done" } else { "todo" } }).collect()
+        };
+        Plan { app, items }
+    }
+
+    fn set(&mut self, i: usize, state: &'static str) {
+        if let Some(item) = self.items.get_mut(i) {
+            item.state = state;
+            let _ = self.app.emit("kompact-assistant-plan", &self.items);
+        }
+    }
+
+    /// The steps from `from` on that won't run now.
+    fn rest(&mut self, from: usize, state: &'static str) {
+        for item in self.items.iter_mut().skip(from) {
+            if item.state == "todo" {
+                item.state = state;
+            }
+        }
+        if !self.items.is_empty() {
+            let _ = self.app.emit("kompact-assistant-plan", &self.items);
+        }
+    }
+
+    fn into_reply(self, r: Reply) -> Reply {
+        Reply { plan: (!self.items.is_empty()).then_some(self.items), ..r }
+    }
+}
+
+/// 19e: the HUD's Stop: the plan running now stops before its next step.
+static STOP_PLAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+pub fn assistant_stop() {
+    info!("assistant: stop (the HUD)");
+    STOP_PLAN.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -129,11 +190,11 @@ pub struct Card {
 }
 
 fn reply(text: impl Into<String>, mood: &'static str) -> Reply {
-    Reply { text: text.into(), mood, undo: None, confirm: None }
+    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None }
 }
 
 const HELP: &str = "Try: “volume 30”, “dark mode”, “open Firefox”, “put Firefox and Terminal side by side”, \
-“next song”, “do not disturb”, “go to desktop 2”, “take a screenshot”, “lock the screen”.";
+“next song”, “do not disturb”, “go to desktop 2”, “take a screenshot”, “lock the screen”, or a routine: “set up for coding”.";
 
 // ---- undo ----
 
@@ -382,7 +443,10 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             let apps: Vec<AppCand> = overlay.apps().into_iter().map(|a| AppCand { about: format!("{} {}", a.keywords, a.comment), id: a.id, name: a.name }).collect();
             let want = str_arg("app");
             let found = best_app(&want, &apps).ok_or_else(|| format!("I can't find an app called “{want}”."))?;
-            ctx.before_open = Some(windows(app).iter().map(|w| w.id).collect());
+            // The first app opened keeps the list: windows from every app this request opens are new.
+            if ctx.before_open.is_none() {
+                ctx.before_open = Some(windows(app).iter().map(|w| w.id).collect());
+            }
             if !overlay.launch_id(app, &found.id) {
                 return Err(format!("{} didn't start.", found.name));
             }
@@ -547,23 +611,41 @@ fn finish(app: &AppHandle, said: Vec<String>, undo: Vec<Undo>, read_only: bool) 
     r
 }
 
-/// Run `steps` from `at`, until the end, a refusal, an error, or a step that asks first.
-async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, mut said: Vec<String>, mut undo: Vec<Undo>, mut confirmed: bool) -> Reply {
+/// Run `steps` from `at`, until the end, a refusal, an error, a step that asks first, or Stop.
+async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, said: Vec<String>, undo: Vec<Undo>, confirmed: bool) -> Reply {
+    let mut plan = Plan::new(app, &steps, at);
+    let r = run_steps(app, &steps, at, said, undo, confirmed, &mut plan).await;
+    plan.into_reply(r)
+}
+
+async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<String>, mut undo: Vec<Undo>, mut confirmed: bool, plan: &mut Plan<'_>) -> Reply {
+    use std::sync::atomic::Ordering;
     let mut ctx = Ctx::default();
     let read_only = steps.iter().all(|s| super::tools::find(s.tool).is_some_and(|t| t.tier == super::tools::Tier::Read));
     for i in at..steps.len() {
+        if i > at && STOP_PLAN.swap(false, Ordering::Relaxed) {
+            info!("assistant: stopped after {i} of {} steps", steps.len());
+            plan.rest(i, "stopped");
+            said.push(format!("Stopped: {i} of {} done.", steps.len()));
+            return finish(app, said, undo, true);
+        }
         let s = &steps[i];
+        plan.set(i, "now");
         let proposal = Proposal { tool: s.tool.to_string(), args: s.args.clone(), from_untrusted: false };
         match policy::decide(&proposal, i) {
             Decision::Refuse(r) => {
                 info!("assistant: refused {}: {r}", s.tool);
                 activity::record(app, Kind::Refused, s.tool, &r.to_string());
+                plan.set(i, "failed");
+                plan.rest(i + 1, "stopped");
                 said.push(r.to_string());
                 return Reply { mood: "sorry", ..finish(app, said, undo, true) };
             }
             Decision::Confirm { .. } if !confirmed => {
                 let window = s.args.get("window").and_then(Value::as_str).and_then(|q| window_for(app, q).ok()).map(|w| label(&w));
                 if s.tool == "close_window" && window.is_none() {
+                    plan.set(i, "failed");
+                    plan.rest(i + 1, "stopped");
                     said.push(format!("I can't find a window for “{}”.", s.args["window"].as_str().unwrap_or("")));
                     return Reply { mood: "sorry", ..finish(app, said, undo, true) };
                 }
@@ -572,11 +654,12 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, mut said: Vec<Str
                 let id = state.id();
                 info!("assistant: asks first: {} ({id})", s.tool);
                 activity::record(app, Kind::AsksFirst, s.tool, &text);
+                plan.set(i, "asks");
                 let prefix = said.join(" ");
                 let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
                 let card = Card { id, text: text.clone(), button };
-                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.clone(), at: i, said, undo, card: card.clone() }));
-                return Reply { text, mood: "concerned", undo: None, confirm: Some(card) };
+                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() }));
+                return Reply { text, mood: "concerned", undo: None, confirm: Some(card), plan: None };
             }
             Decision::Confirm { .. } | Decision::Run { .. } => {
                 confirmed = false;
@@ -584,12 +667,15 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, mut said: Vec<Str
                     Ok(d) => {
                         info!("assistant: ran {} {}", s.tool, s.args);
                         activity::record(app, Kind::Ran, s.tool, &d.text);
+                        plan.set(i, "done");
                         said.push(d.text);
                         undo.extend(d.undo);
                     }
                     Err(e) => {
                         info!("assistant: {} failed: {e}", s.tool);
                         activity::record(app, Kind::Failed, s.tool, &e);
+                        plan.set(i, "failed");
+                        plan.rest(i + 1, "stopped");
                         said.push(e);
                         return Reply { mood: "sorry", ..finish(app, said, undo, true) };
                     }
@@ -622,8 +708,22 @@ fn aloud(app: &AppHandle, r: Reply, spoken: bool) -> Reply {
 }
 
 async fn request(app: &AppHandle, text: &str) -> Reply {
-    // A new request drops one that was waiting on a card.
+    // A new request drops one that was waiting on a card, and a Stop meant for an old one.
     app.state::<Assistant>().with(|i| i.waiting = None);
+    STOP_PLAN.store(false, std::sync::atomic::Ordering::Relaxed);
+    // 19e: a routine ("set up for coding") before the rules ("start coding" would open an app).
+    let routines = super::routines::load();
+    if let Some(r) = super::routines::invoked(text, &routines) {
+        return match super::routines::expand(r) {
+            Ok(steps) => {
+                info!("assistant: routine {:?}: {} steps", r.name, steps.len());
+                let done = proceed(app, steps, 0, Vec::new(), Vec::new(), false).await;
+                // All done: one line for the whole routine (the plan shows each step).
+                if done.mood == "happy" { Reply { text: format!("Ready for {}.", r.name), ..done } } else { done }
+            }
+            Err(p) => reply(format!("The {} routine has a request I don't understand: “{p}”. Fix it in Settings → Assistant.", r.name), "sorry"),
+        };
+    }
     match rules::parse(text) {
         Parsed::Hello => reply("Vanakkam! What can I do for you?", "happy"),
         Parsed::Help => reply(HELP, "speaking"),
@@ -705,7 +805,7 @@ pub async fn assistant_heard(app: AppHandle, text: String) -> Reply {
             None => {
                 info!("assistant: a spoken yes can't confirm; the card stays");
                 let text = format!("I heard “{}”, but only a click on {} says yes to this.", text.trim(), card.button);
-                Reply { text: text.clone(), mood: "concerned", undo: None, confirm: Some(Card { text, ..card }) }
+                Reply { text: text.clone(), mood: "concerned", undo: None, confirm: Some(Card { text, ..card }), plan: None }
             }
         },
         (Some(policy::Spoken::No), None) if matches!(rules::parse(&text), Parsed::Unknown(_)) => reply("Okay. There's nothing to cancel.", "idle"),
@@ -734,6 +834,7 @@ async fn answer(app: &AppHandle, id: u64, confirm: bool) -> Reply {
         return finish(&app, said, w.undo, true);
     }
     info!("assistant: confirmed {} (clicked)", w.steps[w.at].tool);
+    STOP_PLAN.store(false, std::sync::atomic::Ordering::Relaxed);
     activity::record(&app, Kind::Confirmed, w.steps[w.at].tool, "Clicked");
     proceed(&app, w.steps, w.at, w.said, w.undo, true).await
 }

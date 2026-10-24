@@ -266,18 +266,74 @@ fn clause(c: &str) -> Option<Vec<Step>> {
 }
 
 /// Split into requests at "and then", "then", "and", "," and ";", keeping "x and y side by side"
-/// whole.
+/// whole: the piece with "side by side" takes the one before it back ("open terminal and put
+/// terminal and firefox side by side" is two requests, not one).
 fn split(c: &str) -> Vec<String> {
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for part in c.split(" and then ").flat_map(|p| p.split(" then ")) {
-        if part.contains(" side by side") {
-            out.push(part.trim().to_string());
-            continue;
+        let start = out.len();
+        for piece in part.split(" and ").map(str::trim).filter(|p| !p.is_empty()) {
+            if piece.contains("side by side") && out.len() > start {
+                let before = out.pop().unwrap_or_default();
+                out.push(format!("{before} and {piece}"));
+            } else {
+                out.push(piece.to_string());
+            }
         }
-        out.extend(part.split(" and ").map(|s| s.trim().to_string()));
     }
-    out.retain(|s| !s.is_empty());
     out
+}
+
+/// 19e: a step as one line of a plan ("Open Firefox", "Put Terminal on the left").
+pub fn describe(s: &Step) -> String {
+    let text = |k: &str| s.args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let on = s.args.get("on").and_then(Value::as_bool).unwrap_or(true);
+    let int = |k: &str| s.args.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let title = |t: String| {
+        let mut c = t.chars();
+        c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+    };
+    let switch = |what: &str| format!("{what} {}", if on { "on" } else { "off" });
+    match s.tool {
+        "list_windows" => "Look at the open windows".into(),
+        "sound_status" => "Check the sound".into(),
+        "network_status" => "Check the network".into(),
+        "bluetooth_status" => "Check Bluetooth".into(),
+        "now_playing" => "See what's playing".into(),
+        "set_volume" => format!("Volume {}%", int("percent")),
+        "change_volume" if int("by") < 0 => format!("Volume down {}", -int("by")),
+        "change_volume" => format!("Volume up {}", int("by")),
+        "mute" if text("device") == "microphone" => if on { "Mute the microphone".into() } else { "Unmute the microphone".into() },
+        "mute" => if on { "Mute the sound".into() } else { "Unmute the sound".into() },
+        "sound_output" => format!("Sound to {}", text("device")),
+        "media" => match text("action").as_str() {
+            "next" => "Next track".into(),
+            "previous" => "Previous track".into(),
+            _ => "Play or pause".into(),
+        },
+        "open_app" => format!("Open {}", title(text("app"))),
+        "focus_window" => format!("Bring up {}", title(text("window"))),
+        "minimize_window" => format!("Minimize {}", title(text("window"))),
+        "place_window" => match text("where").as_str() {
+            "left" => format!("Put {} on the left", title(text("window"))),
+            "right" => format!("Put {} on the right", title(text("window"))),
+            "fill" => format!("Maximize {}", title(text("window"))),
+            _ => format!("Restore {}", title(text("window"))),
+        },
+        "switch_desktop" => format!("Go to desktop {}", int("number")),
+        "do_not_disturb" => switch("Do Not Disturb"),
+        "appearance" => format!("{} appearance", title(text("mode"))),
+        "keep_awake" => switch("Keep Awake"),
+        "screenshot" if text("of") == "area" => "Screenshot of an area".into(),
+        "screenshot" => "Screenshot".into(),
+        "lock_screen" => "Lock the screen".into(),
+        "close_window" => format!("Close {}", title(text("window"))),
+        "wifi" => switch("Wi-Fi"),
+        "bluetooth" => switch("Bluetooth"),
+        "log_out" => "Log out".into(),
+        "power" => title(text("action").replace('-', " ")),
+        other => other.replace('_', " "),
+    }
 }
 
 /// 19d: a spoken answer to a waiting card ("cancel", "yes"), or None if it's a request. Only
@@ -467,6 +523,35 @@ mod tests {
         assert_eq!(parse(""), Parsed::Unknown(String::new()));
         assert!(matches!(parse("delete all my files"), Parsed::Unknown(_)));
         assert!(matches!(parse("run sudo rm -rf"), Parsed::Steps(_)), "becomes open_app \"sudo rm -rf\", which matches no app");
+    }
+
+    #[test]
+    fn side_by_side_among_others() {
+        let tools = |t: &str| match parse(t) {
+            Parsed::Steps(steps) => steps.iter().map(|s| (s.tool, s.args["window"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>(),
+            other => panic!("{t}: {other:?}"),
+        };
+        let p = |w: &str| ("place_window", w.to_string());
+        assert_eq!(tools("open terminal and put terminal and firefox side by side"), [("open_app", String::new()), p("terminal"), p("firefox")]);
+        assert_eq!(tools("put firefox and files side by side and do not disturb"), [p("firefox"), p("files"), ("do_not_disturb", String::new())]);
+        assert_eq!(tools("firefox and files side by side"), [p("firefox"), p("files")]);
+    }
+
+    #[test]
+    fn plan_lines() {
+        let lines = |t: &str| match parse(t) {
+            Parsed::Steps(steps) => steps.iter().map(describe).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(lines("open firefox then put it on the left"), ["Open Firefox", "Put Firefox on the left"]);
+        assert_eq!(lines("volume 30, dark mode, do not disturb"), ["Volume 30%", "Dark appearance", "Do Not Disturb on"]);
+        assert_eq!(lines("restart"), ["Restart"]);
+        assert_eq!(lines("power off"), ["Power off"]);
+        // Every tool has its own line (none falls through to its bare name).
+        for t in super::super::tools::TOOLS {
+            let line = describe(&step(t.name, json!({})));
+            assert_ne!(line, t.name.replace('_', " "), "{}", t.name);
+        }
     }
 
     #[test]
