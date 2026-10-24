@@ -733,7 +733,7 @@ function renderAssistant() {
     ? ""
     : speech.ready
       ? `With the British English “Alan” voice (${speech.voice}), made on this PC.`
-      : "Not set up yet. Run shell/tools/get-speaking-voice.sh (about 90 MB, once).";
+      : "Not set up yet. Run “kompact-assistant-setup voice” in a terminal (about 140 MB, once).";
   $("as-model").textContent = !model
     ? ""
     : model.ready

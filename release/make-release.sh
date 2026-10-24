@@ -36,6 +36,12 @@ done
 install -m 755 "$root/kompact/tools/login/kompact-session" "$stage/bin/"
 install -m 755 "$root/kompact/tools/login/kompact-greeter-session" "$stage/bin/"
 install -m 644 "$root/kompact/tools/login/kompact.desktop" "$stage/share/"
+# 19i: setting up the assistant (run by each user; it fetches the models into their home).
+install -m 755 "$root/shell/tools/kompact-assistant-setup" "$stage/bin/"
+mkdir -p "$stage/libexec"
+for f in get-voice-model.sh get-speaking-voice.sh get-assistant-model.sh; do
+    install -m 755 "$root/shell/tools/$f" "$stage/libexec/"
+done
 cat >"$stage/share/90_kompact.gschema.override" <<'EOF'
 # kompact: macOS-style title-bar buttons on the left for GTK apps in kompact sessions only.
 [org.gnome.desktop.wm.preferences:kompact]

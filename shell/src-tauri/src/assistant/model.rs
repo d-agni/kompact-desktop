@@ -255,9 +255,8 @@ pub struct ModelState {
 pub fn state() -> ModelState {
     let missing = match (on_path("llama-completion"), model_file().is_some()) {
         (true, true) => None,
-        (false, true) => Some("Install llama.cpp: sudo apt install llama.cpp-tools".into()),
-        (true, false) => Some("Fetch the model: shell/tools/get-assistant-model.sh".into()),
-        (false, false) => Some("Run shell/tools/get-assistant-model.sh, then sudo apt install llama.cpp-tools".into()),
+        // 19i: one command sets it up (the package and the model).
+        _ => Some("Run “kompact-assistant-setup understanding” in a terminal (1.1 GB, once).".into()),
     };
     ModelState { ready: missing.is_none(), model: MODEL_NAME, missing }
 }

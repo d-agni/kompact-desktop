@@ -165,9 +165,8 @@ pub fn state() -> VoiceState {
     let model = model().map(|(m, _)| m);
     let missing = match (whisper, model.is_some()) {
         (true, true) => None,
-        (false, true) => Some("Install whisper.cpp: sudo apt install whisper.cpp".into()),
-        (true, false) => Some("Fetch the speech model: shell/tools/get-voice-model.sh".into()),
-        (false, false) => Some("Run shell/tools/get-voice-model.sh, then sudo apt install whisper.cpp".into()),
+        // 19i: one command sets it up (the package and the model).
+        _ => Some("Run “kompact-assistant-setup hearing” in a terminal.".into()),
     };
     VoiceState { ready: missing.is_none(), whisper, model, missing }
 }

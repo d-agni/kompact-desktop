@@ -17,11 +17,12 @@ if systemctl is-enabled --quiet greetd 2>/dev/null && grep -q kompact-greeter-se
 fi
 while read -r f; do
     case "$f" in
-        /usr/local/bin/* | /usr/local/sbin/* | /usr/share/wayland-sessions/kompact.desktop | /usr/share/glib-2.0/schemas/90_kompact.gschema.override)
+        /usr/local/bin/* | /usr/local/sbin/* | /usr/local/libexec/kompact/* | /usr/share/wayland-sessions/kompact.desktop | /usr/share/glib-2.0/schemas/90_kompact.gschema.override)
             rm -f "$f" ;;
         *) echo "skipped $f (not one of kompact's places)" ;;
     esac
 done <"$manifest"
+rmdir /usr/local/libexec/kompact 2>/dev/null || true
 glib-compile-schemas /usr/share/glib-2.0/schemas 2>/dev/null || true
 rm -rf "$state"
 echo "kompact is removed. Log out and pick another session; your files and settings are untouched."

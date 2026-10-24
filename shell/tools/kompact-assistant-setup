@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Sets up Siva, kompact's assistant, for you (19i). Run it as yourself, not with sudo:
+#
+#   kompact-assistant-setup                 # everything: hearing, voice, understanding
+#   kompact-assistant-setup hearing         # speech to text: whisper.cpp + its English model (142 MB)
+#   kompact-assistant-setup voice           # spoken replies: Piper + the "Alan" voice (137 MB)
+#   kompact-assistant-setup understanding   # free-form requests: llama.cpp + Qwen2.5 1.5B (1.1 GB)
+#   kompact-assistant-setup --check         # what's set up
+#   kompact-assistant-setup --remove        # deletes what this fetched from your home folder
+#
+# Ubuntu's packages (whisper.cpp, llama.cpp-tools) are installed with sudo apt when missing
+# (Ubuntu 26.04 has them; 24.04 doesn't, and those parts are skipped there). The models go into
+# ~/.local/share/kompact/, each checked against a published or pinned SHA-256. Siva himself never
+# goes online: this is the one time they're fetched. Typed requests and the built-in rules work
+# without any of it.
+set -euo pipefail
+
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+# The fetch scripts: next to this one (the source tree) or in libexec (an installed release).
+lib=$here
+[[ -x "$lib/get-voice-model.sh" ]] || lib=$(cd "$here/../libexec/kompact" 2>/dev/null && pwd) || true
+data="${XDG_DATA_HOME:-$HOME/.local/share}/kompact"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/kompact/llm"
+
+say() { printf '\n==> %s\n' "$*"; }
+fail() { printf 'kompact-assistant-setup: %s\n' "$*" >&2; exit 1; }
+
+[[ "$(id -u)" != 0 || -n "${KOMPACT_SETUP_AS_ROOT:-}" ]] || fail "run it as yourself, not with sudo (the models go into your home folder)"
+
+no_apt=
+parts=()
+mode=setup
+for a in "$@"; do
+    case "$a" in
+        hearing | voice | understanding) parts+=("$a") ;;
+        --check) mode=check ;;
+        --remove) mode=remove ;;
+        --no-apt) no_apt=1 ;; # install.sh --assistant has done apt already
+        -h | --help) sed -n '2,17p' "$0"; exit 0 ;;
+        *) fail "unknown option: $a (try --help)" ;;
+    esac
+done
+[[ ${#parts[@]} -gt 0 ]] || parts=(hearing voice understanding)
+
+have() { command -v "$1" >/dev/null 2>&1; }
+packaged() { apt-cache show "$1" >/dev/null 2>&1; }
+
+check() {
+    local ok=1
+    if have whisper-cli && compgen -G "$data/whisper/ggml-*.bin" >/dev/null; then
+        echo "hearing:       ready ($(basename "$(ls "$data"/whisper/ggml-*.bin | head -1)"))"
+    else
+        echo "hearing:       not set up"; ok=
+    fi
+    if [[ -x "$data/piper/piper/piper" && -f "$data/piper/voices/en_GB-alan-medium.onnx" ]]; then
+        echo "voice:         ready (en_GB-alan-medium)"
+    else
+        echo "voice:         not set up"; ok=
+    fi
+    if have llama-completion && [[ -f "$data/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf" ]]; then
+        echo "understanding: ready (Qwen2.5 1.5B)"
+    else
+        echo "understanding: not set up"; ok=
+    fi
+    [[ -n "$ok" ]]
+}
+
+if [[ $mode == check ]]; then
+    check
+    exit $?
+fi
+
+if [[ $mode == remove ]]; then
+    echo "This deletes Siva's downloaded models from your home folder:"
+    du -sh "$data/whisper" "$data/piper" "$data/llm" "$cache" 2>/dev/null || true
+    read -r -p "Delete them? [y/N] " yes
+    [[ "$yes" == [yY]* ]] || { echo "Nothing deleted."; exit 0; }
+    rm -rf "$data/whisper" "$data/piper" "$data/llm" "$cache"
+    echo "Deleted. (whisper.cpp and llama.cpp-tools stay installed; remove them with apt if you like.)"
+    exit 0
+fi
+
+[[ -n "$lib" && -x "$lib/get-voice-model.sh" ]] || fail "can't find the fetch scripts (get-voice-model.sh …) next to this script or in ../libexec/kompact"
+
+# The packages, with sudo, when missing and packaged here.
+want=()
+for p in "${parts[@]}"; do
+    case "$p" in
+        hearing) have whisper-cli || want+=(whisper.cpp) ;;
+        understanding) have llama-completion || want+=(llama.cpp-tools) ;;
+    esac
+done
+skip=()
+if [[ ${#want[@]} -gt 0 && -z "$no_apt" ]]; then
+    avail=()
+    for p in "${want[@]}"; do
+        if packaged "$p"; then avail+=("$p"); else skip+=("$p"); fi
+    done
+    if [[ ${#avail[@]} -gt 0 ]]; then
+        say "Installing ${avail[*]} (sudo asks for your password)"
+        sudo apt-get install -y "${avail[@]}" || fail "apt couldn't install ${avail[*]}"
+    fi
+fi
+
+for p in "${parts[@]}"; do
+    case "$p" in
+        hearing)
+            if ! have whisper-cli; then
+                echo "hearing: skipped, whisper.cpp isn't packaged for this system (Ubuntu 26.04 has it)"
+                continue
+            fi
+            say "Hearing: the speech model"
+            "$lib/get-voice-model.sh"
+            ;;
+        voice)
+            say "Voice: Piper and the Alan voice"
+            "$lib/get-speaking-voice.sh"
+            ;;
+        understanding)
+            if ! have llama-completion; then
+                echo "understanding: skipped, llama.cpp isn't packaged for this system (Ubuntu 26.04 has it)"
+                continue
+            fi
+            say "Understanding: the local model"
+            "$lib/get-assistant-model.sh"
+            ;;
+    esac
+done
+
+say "Siva"
+check || true
+echo
+echo "Click the ring in the menu bar (or press Ctrl+Super+V) and speak. Settings → Assistant shows the same."

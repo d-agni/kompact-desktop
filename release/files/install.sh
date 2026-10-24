@@ -3,6 +3,8 @@
 #   sudo ./install.sh                  # the kompact desktop: pick "kompact" on your login screen
 #   sudo ./install.sh --login-screen   # also kompact's own login screen at boot (greetd), in
 #                                      # place of your current one (GDM, …); back: see below
+#   sudo ./install.sh --assistant      # also sets up Siva, the assistant, for you: hearing,
+#                                      # voice and understanding (~1.4 GB into your home folder)
 # For Ubuntu 24.04 LTS or newer (and Debian-based systems of the same age), 64-bit PC (x86_64),
 # on a real machine or in a virtual machine with a virtual GPU (virtio-gpu, VMware SVGA, …).
 #
@@ -19,11 +21,13 @@ sbin=/usr/local/sbin
 state=/var/lib/kompact
 manifest=$state/installed-files
 login_screen=
+assistant=
 
 for a in "$@"; do
     case "$a" in
         --login-screen) login_screen=1 ;;
-        -h | --help) sed -n '2,13p' "$0"; exit 0 ;;
+        --assistant) assistant=1 ;;
+        -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown option: $a (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -72,6 +76,9 @@ put() { # mode source destination
 for f in "$here"/bin/*; do
     put 755 "$f" "$bin/$(basename "$f")"
 done
+for f in "$here"/libexec/*; do
+    put 755 "$f" "/usr/local/libexec/kompact/$(basename "$f")"
+done
 put 755 "$here/uninstall.sh" "$sbin/kompact-uninstall"
 put 755 "$here/login-screen.sh" "$sbin/kompact-login-screen"
 cp "$here/VERSION" "$state/version"
@@ -92,6 +99,24 @@ if [ -n "$login_screen" ]; then
     "$sbin/kompact-login-screen" enable
 fi
 
+if [ -n "$assistant" ]; then
+    say "Setting up Siva, the assistant"
+    # The packages here (as root); the models as the user who ran sudo, into their home.
+    avail=
+    for p in whisper.cpp llama.cpp-tools; do
+        apt-cache show "$p" >/dev/null 2>&1 && avail="$avail $p"
+    done
+    if [ -n "$avail" ]; then
+        # shellcheck disable=SC2086
+        DEBIAN_FRONTEND=noninteractive apt-get install -y $avail || echo "(couldn't install$avail; Siva's hearing / understanding stay off)"
+    fi
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        sudo -u "$SUDO_USER" -H "$bin/kompact-assistant-setup" --no-apt || echo "(the assistant's setup didn't finish; run kompact-assistant-setup yourself later)"
+    else
+        echo "Run kompact-assistant-setup as yourself (not root) to fetch the assistant's models."
+    fi
+fi
+
 echo
 echo "kompact desktop $version is installed."
 echo
@@ -104,4 +129,6 @@ fi
 echo "  - Super+Space searches apps, Super+Return opens a terminal; the logo menu at the top left"
 echo "    has System Settings, Lock Screen and Log Out."
 echo "  - Screen stays black? Ctrl+Alt+F3, log in, and read ~/.local/state/kompact/kompact.log."
+echo "  - Siva, the assistant: the ring in the menu bar (or Ctrl+Super+V). For speech, run"
+echo "    kompact-assistant-setup once (typed requests work without it)."
 echo "  - Uninstall: sudo kompact-uninstall"
