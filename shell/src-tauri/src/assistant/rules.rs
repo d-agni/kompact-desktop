@@ -280,6 +280,36 @@ fn split(c: &str) -> Vec<String> {
     out
 }
 
+/// 19d: a spoken answer to a waiting card ("cancel", "yes"), or None if it's a request. Only
+/// the whole utterance counts: "stop the music" is a request. What a spoken yes may do is
+/// `policy::confirmed`'s to say (nothing).
+pub fn spoken_answer(text: &str) -> Option<super::policy::Spoken> {
+    use super::policy::Spoken;
+    const NO: [&str; 13] = ["cancel", "stop", "no", "nope", "never mind", "nevermind", "dont", "do not", "dont do it", "abort", "forget it", "no thanks", "cancel that"];
+    const YES: [&str; 10] = ["yes", "yeah", "yep", "confirm", "do it", "ok", "okay", "go ahead", "sure", "yes please"];
+    let t = normalize(text);
+    if NO.contains(&t.as_str()) {
+        Some(Spoken::No)
+    } else if YES.contains(&t.as_str()) {
+        Some(Spoken::Yes)
+    } else {
+        None
+    }
+}
+
+/// 19h-2: what was heard, as `parse` should get it. whisper puts commas where you paused
+/// ("Volume, 100"), which `parse` reads as two requests: if it doesn't understand the text, the
+/// same without commas is tried.
+pub fn for_voice(text: &str) -> String {
+    let plain = text.replace(',', " ");
+    let unknown = |t: &str| matches!(parse(t), Parsed::Unknown(_));
+    if unknown(text) && !unknown(&plain) {
+        plain
+    } else {
+        text.to_string()
+    }
+}
+
 pub fn parse(text: &str) -> Parsed {
     // Commas and semicolons separate requests too: mark them before punctuation goes.
     let marked = text.replace([',', ';'], " and ");
@@ -437,5 +467,25 @@ mod tests {
         assert_eq!(parse(""), Parsed::Unknown(String::new()));
         assert!(matches!(parse("delete all my files"), Parsed::Unknown(_)));
         assert!(matches!(parse("run sudo rm -rf"), Parsed::Steps(_)), "becomes open_app \"sudo rm -rf\", which matches no app");
+    }
+
+    #[test]
+    fn heard_with_commas() {
+        assert_eq!(parse(&for_voice("Volume, 100")), Parsed::Steps(vec![step("set_volume", json!({"percent": 100}))]));
+        assert_eq!(for_voice("volume 30, dark mode"), "volume 30, dark mode", "understood: kept as two requests");
+        assert_eq!(for_voice("Matching my terminals"), "Matching my terminals", "not understood either way: as heard");
+    }
+
+    #[test]
+    fn spoken_answers() {
+        use crate::assistant::policy::Spoken;
+        assert_eq!(spoken_answer("Cancel."), Some(Spoken::No));
+        assert_eq!(spoken_answer("Siva, stop!"), Some(Spoken::No));
+        assert_eq!(spoken_answer("Don't."), Some(Spoken::No));
+        assert_eq!(spoken_answer("never mind"), Some(Spoken::No));
+        assert_eq!(spoken_answer("Yes, please."), Some(Spoken::Yes));
+        assert_eq!(spoken_answer("OK"), Some(Spoken::Yes));
+        assert_eq!(spoken_answer("stop the music"), None, "a request, not an answer");
+        assert_eq!(spoken_answer("yes close firefox"), None);
     }
 }

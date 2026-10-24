@@ -12,10 +12,11 @@
  *   sound?: {output: boolean, muted?: boolean, playing?: string[]} | null,
  *   input?: {layouts: number} | null,
  *   spaces?: {current: number, others_in_use: boolean} | null,
+ *   assistant?: {active: boolean} | null,
  * }} MenuBarState */
 
 /** @type {Record<string, MenuBarMode>} */
-const MENU_BAR_DEFAULTS = { network: "active", bluetooth: "active", sound: "active", input: "active", spaces: "active", spotlight: "always" };
+const MENU_BAR_DEFAULTS = { network: "active", bluetooth: "active", sound: "active", input: "active", spaces: "active", spotlight: "always", assistant: "always" };
 
 /** When the bar is too narrow, these fold away first (all but Desktops and Spotlight are in
  * Control Center; those two have their shortcuts). */
@@ -55,6 +56,9 @@ function menuBarShows(item, mode, st) {
     }
     case "spotlight":
       return true;
+    // 19h: When Active: while it listens or works (its shortcut opens it, 19d-2).
+    case "assistant":
+      return always || !!st.assistant?.active;
     default:
       return true;
   }

@@ -234,6 +234,12 @@ fn serve(app: &AppHandle, stream: UnixStream) {
                 if matches!(action.as_str(), "volume-up" | "volume-down" | "volume-mute" | "mic-mute") {
                     crate::sound::key(app, &action);
                 }
+                // 19d-2: Ctrl+Super+V, as a click on the assistant's menu-bar item.
+                if action == "assistant" {
+                    if let Err(e) = crate::assistant::hud::assistant_toggle(app.clone()) {
+                        warn!("compositor: assistant key: {e}");
+                    }
+                }
                 if let Some((mode, key)) = wanted {
                     let handle = app.clone();
                     let _ = app.run_on_main_thread(move || {

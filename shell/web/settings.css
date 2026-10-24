@@ -583,3 +583,15 @@ label.row { cursor: default; }
 }
 .pic span { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 2px; }
 .pane-icon.dock { background: linear-gradient(#5a9cf8, #2f6fe0); }
+
+/* 19c-2 */
+.pane-icon.assistant { background: linear-gradient(#5b8def, #7a4fd6); }
+.pane-icon.assistant svg { stroke: none; }
+.pane-icon.assistant svg path { fill: currentColor; }
+.btn:disabled { opacity: 0.5; }
+#as-list { max-height: 420px; overflow-y: auto; }
+.as-entry { min-height: 34px; }
+.as-entry .row-label { overflow-wrap: anywhere; }
+.as-when { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.as-asked .row-label, .as-heard .row-label { font-weight: 600; }
+.as-failed .hint, .as-refused .hint { color: var(--error); }

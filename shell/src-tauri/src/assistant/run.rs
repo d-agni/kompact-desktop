@@ -10,9 +10,10 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tracing::info;
 
+use super::activity::{self, Kind};
 use super::policy::{self, Decision, Proposal};
 use super::rules::{self, Parsed, Step};
 use crate::compositor::Compositor;
@@ -112,7 +113,8 @@ pub fn confirm_text(tool: &str, args: &Value, window: Option<&str>) -> (String, 
 #[derive(Debug, Clone, Serialize)]
 pub struct Reply {
     pub text: String,
-    /// Siva's mood for it: `speaking`, `happy`, `concerned` (a card), `sorry`.
+    /// How it went, for the HUD's colour: `speaking` (an answer), `happy` (done), `concerned`
+    /// (a card), `sorry` (failed or not understood), `idle` (nothing to show).
     pub mood: &'static str,
     /// An Undo button for what was done.
     pub undo: Option<u64>,
@@ -158,6 +160,8 @@ struct Waiting {
     at: usize,
     said: Vec<String>,
     undo: Vec<Undo>,
+    /// 19d: shown again when a spoken "yes" can't answer it.
+    card: Card,
 }
 
 #[derive(Default)]
@@ -388,7 +392,9 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             let w = find_window(app, &str_arg("window"), ctx).await?;
             let before = windows(app).into_iter().find(|w| w.focused).map(|w| w.id);
             send(app, "activate", Some(w.id))?;
-            done(format!("Here's {}.", w.name), before.filter(|b| *b != w.id).map(Undo::Activate))
+            // Undo puts a minimized one back in the dock, or brings back the one in front before.
+            let undo = if w.minimized { Some(Undo::Minimize(w.id)) } else { before.filter(|b| *b != w.id).map(Undo::Activate) };
+            done(format!("Here's {}.", w.name), undo)
         }
         "minimize_window" => {
             let w = find_window(app, &str_arg("window"), ctx).await?;
@@ -551,6 +557,7 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, mut said: Vec<Str
         match policy::decide(&proposal, i) {
             Decision::Refuse(r) => {
                 info!("assistant: refused {}: {r}", s.tool);
+                activity::record(app, Kind::Refused, s.tool, &r.to_string());
                 said.push(r.to_string());
                 return Reply { mood: "sorry", ..finish(app, said, undo, true) };
             }
@@ -564,21 +571,25 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, mut said: Vec<Str
                 let state = app.state::<Assistant>();
                 let id = state.id();
                 info!("assistant: asks first: {} ({id})", s.tool);
+                activity::record(app, Kind::AsksFirst, s.tool, &text);
                 let prefix = said.join(" ");
-                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.clone(), at: i, said, undo }));
                 let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
-                return Reply { text: text.clone(), mood: "concerned", undo: None, confirm: Some(Card { id, text, button }) };
+                let card = Card { id, text: text.clone(), button };
+                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.clone(), at: i, said, undo, card: card.clone() }));
+                return Reply { text, mood: "concerned", undo: None, confirm: Some(card) };
             }
             Decision::Confirm { .. } | Decision::Run { .. } => {
                 confirmed = false;
                 match run_step(app, s, &mut ctx).await {
                     Ok(d) => {
                         info!("assistant: ran {} {}", s.tool, s.args);
+                        activity::record(app, Kind::Ran, s.tool, &d.text);
                         said.push(d.text);
                         undo.extend(d.undo);
                     }
                     Err(e) => {
                         info!("assistant: {} failed: {e}", s.tool);
+                        activity::record(app, Kind::Failed, s.tool, &e);
                         said.push(e);
                         return Reply { mood: "sorry", ..finish(app, said, undo, true) };
                     }
@@ -589,19 +600,117 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, mut said: Vec<Str
     finish(app, said, undo, read_only)
 }
 
-/// Siva's bubble: a typed request.
+/// A typed request (the HUD's Type).
 #[tauri::command]
 pub async fn assistant_ask(app: AppHandle, text: String) -> Reply {
     let text: String = text.chars().take(300).collect();
     info!("assistant: asked {text:?}");
+    if !text.trim().is_empty() {
+        activity::record(&app, Kind::Asked, "", text.trim());
+    }
+    let r = request(&app, &text).await;
+    aloud(&app, r, false)
+}
+
+/// 19h-2: `r` said aloud too, if Settings → Assistant → Speak replies says so for a request you
+/// said (`spoken`) or typed / clicked.
+fn aloud(app: &AppHandle, r: Reply, spoken: bool) -> Reply {
+    if !r.text.is_empty() && super::speech::speak_pref().says(spoken) {
+        super::speech::say(app, &r.text);
+    }
+    r
+}
+
+async fn request(app: &AppHandle, text: &str) -> Reply {
     // A new request drops one that was waiting on a card.
     app.state::<Assistant>().with(|i| i.waiting = None);
-    match rules::parse(&text) {
+    match rules::parse(text) {
         Parsed::Hello => reply("Vanakkam! What can I do for you?", "happy"),
         Parsed::Help => reply(HELP, "speaking"),
         Parsed::Unknown(part) if part.is_empty() => reply("Type what you'd like me to do.", "idle"),
-        Parsed::Unknown(part) => reply(format!("Sorry, I don't understand “{part}” yet. Ask me “help” for ideas."), "sorry"),
-        Parsed::Steps(steps) => proceed(&app, steps, 0, Vec::new(), Vec::new(), false).await,
+        Parsed::Unknown(part) => {
+            activity::record(app, Kind::Refused, "", &format!("Didn't understand “{part}”"));
+            reply(format!("Sorry, I don't understand “{part}” yet. Ask me “help” for ideas."), "sorry")
+        }
+        Parsed::Steps(steps) => proceed(app, steps, 0, Vec::new(), Vec::new(), false).await,
+    }
+}
+
+/// 19h: what the menu bar and the HUD show: `listening` (with the microphone's name), `ready`
+/// (it gives sound), `thinking` (with what was heard), `idle`.
+pub fn tell(app: &AppHandle, state: &str, detail: &str) {
+    let _ = app.emit("kompact-assistant", serde_json::json!({"state": state, "detail": detail}));
+}
+
+/// 19h: listen until you've finished, then do what was said. The menu bar and the HUD follow
+/// along through `kompact-assistant` and the wave through `kompact-assistant-level`.
+#[tauri::command]
+pub async fn assistant_listen(app: AppHandle) -> Reply {
+    let ready = super::voice::state();
+    if let Some(missing) = ready.missing {
+        return reply(format!("My ears aren't set up yet. {missing}"), "sorry");
+    }
+    if super::voice::listening() {
+        return reply("", "idle");
+    }
+    let mic = match tauri::async_runtime::spawn_blocking(crate::sound::microphone_now).await {
+        Ok(Ok(Some(mic))) => mic,
+        Ok(Ok(None)) => return reply("There's no microphone. Connect your headset, or choose one in Settings → Sound.", "sorry"),
+        Ok(Err(e)) => return reply(format!("I can't find the microphone: {e}"), "sorry"),
+        Err(e) => return reply(format!("I can't find the microphone: {e}"), "sorry"),
+    };
+    // Never talk over you (nor let the microphone hear Siva).
+    super::speech::hush();
+    tell(&app, "listening", &mic.label);
+    let a = app.clone();
+    let heard = tauri::async_runtime::spawn_blocking(move || {
+        let level = |l: f64| {
+            let _ = a.emit("kompact-assistant-level", l);
+        };
+        // The microphone is on: say so with the chime (a Bluetooth one takes ~1 s to wake).
+        let ready = || {
+            super::speech::play_chime();
+            tell(&a, "ready", &mic.label);
+        };
+        super::voice::listen(&mic, &level, &ready)
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    let r = match heard {
+        Ok(super::voice::Heard::Text(text)) => {
+            tell(&app, "thinking", &text);
+            assistant_heard(app.clone(), text).await
+        }
+        Ok(super::voice::Heard::Nothing(why)) => reply(why, "sorry"),
+        Ok(super::voice::Heard::Cancelled) => reply("", "idle"),
+        Err(e) => reply(e, "sorry"),
+    };
+    tell(&app, "idle", "");
+    aloud(&app, r, true)
+}
+
+/// 19d: what Siva heard. While a card waits, a spoken "no"
+/// or "cancel" answers it; a spoken "yes" can't (`policy::confirmed`), so the card stays for a
+/// click. Anything else is a new request, as if typed.
+#[tauri::command]
+pub async fn assistant_heard(app: AppHandle, text: String) -> Reply {
+    let text: String = text.chars().take(300).collect();
+    info!("assistant: heard {text:?}");
+    activity::record(&app, Kind::Heard, "", text.trim());
+    let waiting = app.state::<Assistant>().with(|i| i.waiting.as_ref().map(|w| (w.id, w.card.clone())));
+    let spoken = rules::spoken_answer(&text);
+    match (spoken, waiting) {
+        (Some(s), Some((id, card))) => match policy::confirmed(policy::Answer::Spoken(s)) {
+            Some(confirm) => answer(&app, id, confirm).await,
+            None => {
+                info!("assistant: a spoken yes can't confirm; the card stays");
+                let text = format!("I heard “{}”, but only a click on {} says yes to this.", text.trim(), card.button);
+                Reply { text: text.clone(), mood: "concerned", undo: None, confirm: Some(Card { text, ..card }) }
+            }
+        },
+        (Some(policy::Spoken::No), None) if matches!(rules::parse(&text), Parsed::Unknown(_)) => reply("Okay. There's nothing to cancel.", "idle"),
+        (Some(policy::Spoken::Yes), None) => reply("There's nothing waiting for a yes.", "idle"),
+        _ => request(&app, &rules::for_voice(&text)).await,
     }
 }
 
@@ -609,29 +718,45 @@ pub async fn assistant_ask(app: AppHandle, text: String) -> Reply {
 /// `policy::confirmed` first (19d) and can only cancel.
 #[tauri::command]
 pub async fn assistant_answer(app: AppHandle, id: u64, confirm: bool) -> Reply {
+    let r = answer(&app, id, confirm).await;
+    aloud(&app, r, false)
+}
+
+async fn answer(app: &AppHandle, id: u64, confirm: bool) -> Reply {
+    let app = app.clone();
     let waiting = app.state::<Assistant>().with(|i| i.waiting.take_if(|w| w.id == id));
     let Some(w) = waiting else { return reply("That question has gone; ask me again.", "sorry") };
     if !confirm {
         info!("assistant: cancelled {}", w.steps[w.at].tool);
+        activity::record(&app, Kind::Cancelled, w.steps[w.at].tool, "Not done");
         let mut said = w.said;
         said.push("Okay, I won't.".into());
         return finish(&app, said, w.undo, true);
     }
     info!("assistant: confirmed {} (clicked)", w.steps[w.at].tool);
+    activity::record(&app, Kind::Confirmed, w.steps[w.at].tool, "Clicked");
     proceed(&app, w.steps, w.at, w.said, w.undo, true).await
 }
 
 #[tauri::command]
 pub async fn assistant_undo(app: AppHandle, id: u64) -> Reply {
+    let r = undo(&app, id).await;
+    aloud(&app, r, false)
+}
+
+async fn undo(app: &AppHandle, id: u64) -> Reply {
+    let app = app.clone();
     let list = app.state::<Assistant>().with(|i| i.undos.iter().position(|(u, _)| *u == id).map(|p| i.undos.remove(p).1));
     let Some(list) = list else { return reply("There's nothing to undo there any more.", "sorry") };
     for u in list.iter().rev() {
         if let Err(e) = undo_one(&app, u).await {
             info!("assistant: undo failed: {e}");
+            activity::record(&app, Kind::Failed, "undo", &e);
             return reply(format!("I couldn't undo all of it: {e}"), "sorry");
         }
     }
     info!("assistant: undone ({} changes)", list.len());
+    activity::record(&app, Kind::Undone, "", &format!("{} change{}", list.len(), if list.len() == 1 { "" } else { "s" }));
     reply("Undone.", "happy")
 }
 

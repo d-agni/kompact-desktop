@@ -361,6 +361,7 @@ function showPane(name) {
   if (name === "network") setTimeout(() => loadNetwork(true), 0);
   if (name === "sound") setTimeout(loadSound, 0);
   if (name === "notifications") setTimeout(loadNotify, 0);
+  if (name === "assistant") setTimeout(() => (void loadAssistant(), void loadMenuBar()), 0);
   if (name === "input") setTimeout(loadCatalogue, 0);
   if (name === "displays") setTimeout(loadDisplays, 0);
   // 12j
@@ -658,6 +659,106 @@ document.querySelectorAll("[data-ms]").forEach((b) =>
     const ms = Number(/** @type {HTMLElement} */ (b).dataset.ms);
     if (nt?.banner_ms !== ms) void setNotify({ banner_ms: ms });
   }),
+);
+
+// ---- 19c-2, 19h: Assistant (voice, what it may do, what it did; the menu-bar choice is 13d's) ----
+
+/** @typedef {{at: number, kind: string, tool: string, text: string}} ActivityEntry */
+/** @type {ActivityEntry[]} */
+let activity = [];
+/** 19d @type {{ready: boolean, model: string | null, missing: string | null} | null} */
+let voice = null;
+/** 19h-2 @type {{ready: boolean, voice: string, speak: "voice" | "always" | "never"} | null} */
+let speech = null;
+
+/** @param {string} cmd @param {Record<string, unknown>} [args] */
+function asCall(cmd, args) {
+  if (!tauri) return Promise.resolve(null);
+  return tauri.core.invoke(cmd, args).catch((/** @type {unknown} */ e) => {
+    const el = $("as-status");
+    el.textContent = String(e);
+    el.classList.add("error");
+    return null;
+  });
+}
+
+async function loadAssistant() {
+  const [list, v, sp] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state")]);
+  activity = list || [];
+  voice = v;
+  speech = sp;
+  renderAssistant();
+}
+
+async function loadActivity() {
+  activity = (await asCall("assistant_activity")) || [];
+  renderActivity();
+}
+
+const AS_KINDS = /** @type {Record<string, string>} */ ({
+  asked: "You asked",
+  heard: "You said",
+  ran: "Done",
+  failed: "Didn't work",
+  refused: "Wouldn't",
+  "asks-first": "Asked you first",
+  confirmed: "You confirmed",
+  cancelled: "Cancelled",
+  undone: "Undone",
+});
+
+/** "14:02", "Yesterday 14:02" or "3 Oct 14:02". @param {number} secs */
+function asWhen(secs) {
+  const d = new Date(secs * 1000);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (day === today) return time;
+  if (day === today - 86400000) return `Yesterday ${time}`;
+  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
+}
+
+function renderAssistant() {
+  $("as-voice").textContent = !voice ? "" : voice.ready ? `Ready, with the ${voice.model} speech model. What you say is turned into text on this PC and never kept.` : `Not set up yet. ${voice.missing}`;
+  const speak = /** @type {HTMLSelectElement} */ ($("as-speak"));
+  speak.value = speech?.speak || "voice";
+  speak.disabled = !speech?.ready;
+  $("as-speech").textContent = !speech
+    ? ""
+    : speech.ready
+      ? `With the British English “Alan” voice (${speech.voice}), made on this PC.`
+      : "Not set up yet. Run shell/tools/get-speaking-voice.sh (about 90 MB, once).";
+  renderActivity();
+}
+
+function renderActivity() {
+  const list = $("as-list");
+  list.replaceChildren(
+    ...activity.map((e) => {
+      const row = document.createElement("div");
+      row.className = `row as-entry as-${e.kind}`;
+      const what = e.kind === "asked" || e.kind === "heard" ? `“${e.text}”` : e.text || (e.tool ? e.tool.replace(/_/g, " ") : "");
+      const hint = [AS_KINDS[e.kind] || e.kind, e.kind !== "asked" && e.tool ? e.tool.replace(/_/g, " ") : ""].filter(Boolean).join(" · ");
+      row.append(netLabel(what, hint));
+      row.append(Object.assign(document.createElement("span"), { className: "as-when", textContent: asWhen(e.at) }));
+      return row;
+    }),
+  );
+  if (!activity.length) list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: "Nothing yet. What you ask Siva shows up here." }));
+  /** @type {HTMLButtonElement} */ ($("as-clear")).disabled = !activity.length;
+}
+
+$("as-speak").addEventListener("change", async (e) => {
+  const st = await asCall("set_speak", { speak: /** @type {HTMLSelectElement} */ (e.target).value });
+  if (st) speech = st;
+  renderAssistant();
+});
+$("as-clear").addEventListener("click", () =>
+  ask("Clear Siva's activity?", "The list of what you asked and what it did is deleted from this PC.", [
+    ["Cancel", () => {}],
+    ["Clear", () => void asCall("assistant_activity_clear").then(loadActivity), true],
+  ]),
 );
 
 // ---- 12c: Sound (PipeWire; the menu bar's speaker and the volume keys change it too) ----
@@ -2050,6 +2151,10 @@ if (tauri) {
   tauri.event.listen("kompact-notify-prefs", (/** @type {{payload: NotifyPrefs}} */ e) => {
     nt = e.payload;
     renderNotify();
+  });
+  // 19c-2: a request it just handled.
+  tauri.event.listen("kompact-assistant-activity", () => {
+    if (paneShown === "assistant") void loadActivity();
   });
   // 12i-1
   tauri.event.listen("kompact-idle", (/** @type {{payload: {awake?: string[]}}} */ e) => {

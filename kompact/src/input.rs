@@ -238,6 +238,8 @@ impl Kompact {
             A::VolumeDown => self.shell_key("volume-down"),
             A::VolumeMute => self.shell_key("volume-mute"),
             A::MicMute => self.shell_key("mic-mute"),
+            // 19d-2
+            A::Assistant => self.shell_key("assistant"),
             // 16a: held, a session (most recently used order); a Super tap switches at once.
             A::SwitchWindows => self.start_switcher(press.map(|p| p.mods).unwrap_or_default(), press.map(|p| p.sym)),
             A::CloseWindow => self.close_focused_window(),
