@@ -226,6 +226,7 @@ fn main() {
             assistant::hud::hud_keyboard,
             assistant::run::assistant_listen,
             assistant::run::assistant_stop,
+            assistant::model::model_state,
             assistant::routines::routines_state,
             assistant::routines::routines_save,
             assistant::speech::speech_state,
@@ -317,6 +318,8 @@ fn main() {
             build_osd(app.handle(), gpu, snapshot_dir.clone())?;
             // 19h: the assistant's HUD, hidden until the menu bar's assistant item opens it.
             build_hud(app.handle(), gpu, snapshot_dir.clone())?;
+            // 19f: the local model's prompt cache, made quietly after start.
+            assistant::model::warm_up();
             if notify::enabled_from_env(std::env::var("KOMPACT_SHELL_NOTIFICATIONS").ok().as_deref()) {
                 build_notify(app.handle(), gpu, snapshot_dir.clone())?;
                 notify::start(app.handle().clone());

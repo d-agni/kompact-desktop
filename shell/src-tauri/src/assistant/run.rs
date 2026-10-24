@@ -223,6 +223,9 @@ struct Waiting {
     undo: Vec<Undo>,
     /// 19d: shown again when a spoken "yes" can't answer it.
     card: Card,
+    /// 19f: the card asks about a whole plan the model made ("Did you mean …?"), not one step:
+    /// a click runs the plan, and its Tier 2 steps still ask on their own.
+    whole_plan: bool,
 }
 
 #[derive(Default)]
@@ -658,7 +661,7 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
                 let prefix = said.join(" ");
                 let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
                 let card = Card { id, text: text.clone(), button };
-                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() }));
+                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone(), whole_plan: false }));
                 return Reply { text, mood: "concerned", undo: None, confirm: Some(card), plan: None };
             }
             Decision::Confirm { .. } | Decision::Run { .. } => {
@@ -728,6 +731,38 @@ async fn request(app: &AppHandle, text: &str) -> Reply {
         Parsed::Hello => reply("Vanakkam! What can I do for you?", "happy"),
         Parsed::Help => reply(HELP, "speaking"),
         Parsed::Unknown(part) if part.is_empty() => reply("Type what you'd like me to do.", "idle"),
+        // 19f: what the rules don't know, the local model may (its steps go through `policy`
+        // like any others).
+        Parsed::Unknown(part) if super::model::state().ready => {
+            let words = text.to_string();
+            match tauri::async_runtime::spawn_blocking(move || super::model::ask(&words)).await.unwrap_or_else(|e| Err(e.to_string())) {
+                Ok(steps) if !steps.is_empty() => {
+                    let lines: Vec<String> = steps.iter().map(rules::describe).collect();
+                    activity::record(app, Kind::Understood, "", &lines.join("; "));
+                    // One step about what you said runs (with Undo); several steps, or one that
+                    // isn't about your words (misheard words make those), only on your click.
+                    if steps.len() == 1 && super::model::grounded(&steps[0], text) {
+                        return proceed(app, steps, 0, Vec::new(), Vec::new(), false).await;
+                    }
+                    let state = app.state::<Assistant>();
+                    let id = state.id();
+                    info!("assistant: the model's plan asks first ({id}): {}", lines.join("; "));
+                    let card = Card { id, text: format!("Did you mean: {}?", lines.join(", ")), button: "Do It".into() };
+                    let plan = lines.into_iter().map(|text| PlanItem { text, state: "todo" }).collect();
+                    state.with(|inner| inner.waiting = Some(Waiting { id, steps, at: 0, said: Vec::new(), undo: Vec::new(), card: card.clone(), whole_plan: true }));
+                    Reply { text: card.text.clone(), mood: "concerned", undo: None, confirm: Some(card), plan: Some(plan) }
+                }
+                Ok(_) => {
+                    activity::record(app, Kind::Refused, "", "Not something I can do here");
+                    reply("That's not something I can do on this desktop.", "sorry")
+                }
+                Err(e) => {
+                    info!("assistant: the model couldn't help: {e}");
+                    activity::record(app, Kind::Refused, "", &format!("Didn't understand “{part}”"));
+                    reply(format!("Sorry, I don't understand “{part}”. Ask me “help” for ideas."), "sorry")
+                }
+            }
+        }
         Parsed::Unknown(part) => {
             activity::record(app, Kind::Refused, "", &format!("Didn't understand “{part}”"));
             reply(format!("Sorry, I don't understand “{part}” yet. Ask me “help” for ideas."), "sorry")
@@ -836,7 +871,7 @@ async fn answer(app: &AppHandle, id: u64, confirm: bool) -> Reply {
     info!("assistant: confirmed {} (clicked)", w.steps[w.at].tool);
     STOP_PLAN.store(false, std::sync::atomic::Ordering::Relaxed);
     activity::record(&app, Kind::Confirmed, w.steps[w.at].tool, "Clicked");
-    proceed(&app, w.steps, w.at, w.said, w.undo, true).await
+    proceed(&app, w.steps, w.at, w.said, w.undo, !w.whole_plan).await
 }
 
 #[tauri::command]

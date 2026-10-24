@@ -670,6 +670,8 @@ let activity = [];
 let voice = null;
 /** 19h-2 @type {{ready: boolean, voice: string, speak: "voice" | "always" | "never"} | null} */
 let speech = null;
+/** 19f @type {{ready: boolean, model: string, missing: string | null} | null} */
+let model = null;
 
 /** @param {string} cmd @param {Record<string, unknown>} [args] */
 function asCall(cmd, args) {
@@ -684,7 +686,8 @@ function asCall(cmd, args) {
 
 async function loadAssistant() {
   void loadRoutines();
-  const [list, v, sp] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state")]);
+  const [list, v, sp, md] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state"), asCall("model_state")]);
+  model = md;
   activity = list || [];
   voice = v;
   speech = sp;
@@ -699,6 +702,7 @@ async function loadActivity() {
 const AS_KINDS = /** @type {Record<string, string>} */ ({
   asked: "You asked",
   heard: "You said",
+  understood: "Understood as",
   ran: "Done",
   failed: "Didn't work",
   refused: "Wouldn't",
@@ -730,6 +734,11 @@ function renderAssistant() {
     : speech.ready
       ? `With the British English “Alan” voice (${speech.voice}), made on this PC.`
       : "Not set up yet. Run shell/tools/get-speaking-voice.sh (about 90 MB, once).";
+  $("as-model").textContent = !model
+    ? ""
+    : model.ready
+      ? `Ready (${model.model}): “I can't hear anything”, “get the browser out of the way”. A second or two; a guess of several steps asks first.`
+      : `Not set up yet. ${model.missing}`;
   renderActivity();
 }
 

@@ -356,14 +356,57 @@ pub fn spoken_answer(text: &str) -> Option<super::policy::Spoken> {
 /// 19h-2: what was heard, as `parse` should get it. whisper puts commas where you paused
 /// ("Volume, 100"), which `parse` reads as two requests: if it doesn't understand the text, the
 /// same without commas is tried.
+///
+/// 19f-2: then the same with near misses of the words below put right ("Maximate Firefox" →
+/// "maximize firefox"), but only if that is understood.
 pub fn for_voice(text: &str) -> String {
     let plain = text.replace(',', " ");
     let unknown = |t: &str| matches!(parse(t), Parsed::Unknown(_));
-    if unknown(text) && !unknown(&plain) {
-        plain
-    } else {
-        text.to_string()
+    if !unknown(text) {
+        return text.to_string();
     }
+    [plain.clone(), corrected(text), corrected(&plain)].into_iter().find(|t| !unknown(t)).unwrap_or_else(|| text.to_string())
+}
+
+/// The words commands start with or lean on, for `corrected`.
+const COMMAND_WORDS: [&str; 26] = [
+    "maximize", "minimize", "restore", "volume", "unmute", "mute", "louder", "quieter", "close", "launch", "start",
+    "switch", "desktop", "screenshot", "bluetooth", "disturb", "appearance", "awake", "terminal", "firefox", "files",
+    "settings", "previous", "next", "pause", "music",
+];
+
+/// Edit distance (Levenshtein).
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for j in 0..b.len() {
+            let here = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != b[j])).min(row[j] + 1).min(here + 1);
+            prev = here;
+        }
+    }
+    row[b.len()]
+}
+
+/// `text` with each word of 5 letters or more that is a near miss of exactly one command word
+/// put right (1 letter off for 5, 2 for longer).
+fn corrected(text: &str) -> String {
+    normalize(text)
+        .split_whitespace()
+        .map(|w| {
+            let n = w.chars().count();
+            if n < 5 || COMMAND_WORDS.contains(&w) {
+                return w.to_string();
+            }
+            let most = if n == 5 { 1 } else { 2 };
+            let near: Vec<&str> = COMMAND_WORDS.iter().copied().filter(|c| distance(w, c) <= most).collect();
+            if near.len() == 1 { near[0].to_string() } else { w.to_string() }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn parse(text: &str) -> Parsed {
@@ -552,6 +595,21 @@ mod tests {
             let line = describe(&step(t.name, json!({})));
             assert_ne!(line, t.name.replace('_', " "), "{}", t.name);
         }
+    }
+
+    #[test]
+    fn near_misses() {
+        assert_eq!(distance("maximate", "maximize"), 2);
+        assert_eq!(distance("", "abc"), 3);
+        assert_eq!(distance("files", "files"), 0);
+        assert_eq!(for_voice("Maximate Firefox"), "maximize firefox");
+        assert_eq!(parse(&for_voice("Maximate Firefox")), Parsed::Steps(vec![step("place_window", json!({"window": "firefox", "where": "fill"}))]));
+        assert_eq!(for_voice("minimise the terminal"), "minimise the terminal", "understood already");
+        assert_eq!(for_voice("Minimice the terminal"), "minimize the terminal");
+        assert_eq!(for_voice("Volume 30"), "Volume 30", "understood: as heard");
+        assert_eq!(for_voice("Two points"), "Two points", "nothing near: as heard");
+        assert_eq!(corrected("clone firefox"), "close firefox", "one letter off a 5-letter word");
+        assert_eq!(corrected("glass firefox"), "glass firefox", "two off a 5-letter word: no");
     }
 
     #[test]

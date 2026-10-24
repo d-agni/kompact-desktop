@@ -24,6 +24,8 @@ pub enum Kind {
     Asked,
     /// 19d: as heard by voice.
     Heard,
+    /// 19f: what the local model made of a request the rules didn't know.
+    Understood,
     Ran,
     Failed,
     Refused,
@@ -35,12 +37,13 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [Kind::Asked, Kind::Heard, Kind::Ran, Kind::Failed, Kind::Refused, Kind::AsksFirst, Kind::Confirmed, Kind::Cancelled, Kind::Undone];
+    pub const ALL: [Kind; 10] = [Kind::Asked, Kind::Heard, Kind::Understood, Kind::Ran, Kind::Failed, Kind::Refused, Kind::AsksFirst, Kind::Confirmed, Kind::Cancelled, Kind::Undone];
 
     pub fn word(self) -> &'static str {
         match self {
             Kind::Asked => "asked",
             Kind::Heard => "heard",
+            Kind::Understood => "understood",
             Kind::Ran => "ran",
             Kind::Failed => "failed",
             Kind::Refused => "refused",
