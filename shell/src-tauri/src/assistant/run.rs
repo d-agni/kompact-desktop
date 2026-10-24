@@ -194,7 +194,7 @@ fn reply(text: impl Into<String>, mood: &'static str) -> Reply {
 }
 
 const HELP: &str = "Try: “volume 30”, “dark mode”, “open Firefox”, “put Firefox and Terminal side by side”, \
-“next song”, “do not disturb”, “go to desktop 2”, “take a screenshot”, “lock the screen”, or a routine: “set up for coding”.";
+“next song”, “do not disturb”, “go to desktop 2”, “take a screenshot”, “lock the screen”, “why is my computer slow?”, “why is the sound bad?”, or a routine: “set up for coding”.";
 
 // ---- undo ----
 
@@ -385,6 +385,19 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             }
             let on: Vec<&str> = b["devices"].as_array().map(|d| d.iter().filter(|d| d["connected"].as_bool() == Some(true)).filter_map(|d| d["name"].as_str()).collect()).unwrap_or_default();
             done(if on.is_empty() { "Bluetooth is on; nothing is connected.".to_string() } else { format!("Bluetooth is on: {}.", on.join(", ")) }, None)
+        }
+        // 19g: why things are as they are.
+        "system_status" => {
+            let load = tauri::async_runtime::spawn_blocking(super::diagnose::sample).await.ok().flatten().ok_or("I can't read the computer's load.")?;
+            done(super::diagnose::load_text(&load), None)
+        }
+        "disk_space" => done(super::diagnose::disks_text(&super::diagnose::disks()), None),
+        "sound_check" => {
+            let (dump, load) = tauri::async_runtime::spawn_blocking(|| (crate::sound::dump_now(), super::diagnose::sample()))
+                .await
+                .map_err(|e| e.to_string())?;
+            let dump = dump.map_err(|e| format!("I can't read the sound system: {e}"))?;
+            done(super::diagnose::sound_text(&dump, load.map(|l| l.cpu)), None)
         }
         "now_playing" => {
             let p = crate::media::media_state().await.unwrap_or_default();

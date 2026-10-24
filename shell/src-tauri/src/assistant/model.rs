@@ -199,6 +199,9 @@ fn tool_words(tool: &str) -> &'static [&'static str] {
         "log_out" => &["log", "sign"],
         "power" => &["shut", "restart", "reboot", "sleep", "power", "suspend", "computer"],
         "list_windows" => &["window", "open", "running"],
+        "system_status" => &["slow", "lag", "cpu", "memory", "ram", "busy", "computer", "fan", "hot", "freez", "stuck"],
+        "disk_space" => &["disk", "space", "storage", "full", "drive"],
+        "sound_check" => &["sound", "audio", "cut", "choppy", "crackl", "quality", "bad", "stutter", "phone"],
         _ => &[],
     }
 }

@@ -53,7 +53,7 @@ pub fn nodes(dump: &Value) -> Vec<Node> {
 }
 
 /// The `default` metadata's value for `key` (a node name), from a `pw-dump`.
-fn default_name<'a>(dump: &'a Value, key: &str) -> Option<&'a str> {
+pub fn default_name<'a>(dump: &'a Value, key: &str) -> Option<&'a str> {
     dump.as_array()?
         .iter()
         .filter(|o| o["type"] == "PipeWire:Interface:Metadata" && o["props"]["metadata.name"] == "default")
@@ -92,6 +92,11 @@ pub fn microphone(dump: &Value) -> Option<Node> {
         .or_else(|| inputs.iter().find(|n| n.name.starts_with("alsa_input")))
         .or_else(|| inputs.first())
         .cloned()
+}
+
+/// 19g: PipeWire's state now.
+pub fn dump_now() -> Result<Value, String> {
+    serde_json::from_str(&run(&["pw-dump", "-N"])?).map_err(|e| format!("pw-dump: {e}"))
 }
 
 /// 19d: `microphone` now.

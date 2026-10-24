@@ -67,6 +67,10 @@ pub const TOOLS: &[Tool] = &[
     Tool { name: "sound_status", about: "Output and input devices, the volume, muted or not.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "network_status", about: "Wi-Fi and wired connections.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "bluetooth_status", about: "Bluetooth on or off, and the devices.", tier: Tier::Read, undo: false, params: &[] },
+    // 19g: why things are as they are.
+    Tool { name: "system_status", about: "How busy the computer is: CPU, memory and the busiest apps (why it's slow).", tier: Tier::Read, undo: false, params: &[] },
+    Tool { name: "disk_space", about: "How much space is left on the disks.", tier: Tier::Read, undo: false, params: &[] },
+    Tool { name: "sound_check", about: "Why the sound may be bad or cutting out: muted, the output, a Bluetooth headset in phone-quality mode.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "now_playing", about: "What the media players are playing.", tier: Tier::Read, undo: false, params: &[] },
     // ---- Tier 1: reversible ----
     Tool { name: "set_volume", about: "Set the output volume.", tier: Tier::Reversible, undo: true, params: &[p("percent", Arg::Int { min: 0, max: 100 }, "0 to 100")] },

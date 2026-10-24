@@ -125,6 +125,19 @@ fn clause(c: &str) -> Option<Vec<Step>> {
     }
 
     // ---- reading ----
+    // 19g: why things are as they are.
+    if has(&w, &["slow", "laggy", "lagging", "lag", "sluggish", "cpu", "processor", "ram", "memory"]) || c.contains("system status") || c.contains("how is my computer") || c.contains("hogging") {
+        return Some(vec![step("system_status", json!({}))]);
+    }
+    if c.contains("disk") || c.contains("storage") || c.contains("space left") || c.contains("free space") || c.contains("how much space") {
+        return Some(vec![step("disk_space", json!({}))]);
+    }
+    if has(&w, &["sound", "audio", "music", "headset", "headphones"])
+        && (has(&w, &["bad", "cutting", "cuts", "choppy", "crackling", "crackles", "stutters", "stuttering", "quality", "terrible", "awful", "tinny", "muffled", "breaking"]) || c.contains("like a phone"))
+        || c == "sound check"
+    {
+        return Some(vec![step("sound_check", json!({}))]);
+    }
     if c.contains("playing") && has(&w, &["what", "whats", "now"]) || c == "now playing" {
         return Some(vec![step("now_playing", json!({}))]);
     }
@@ -300,6 +313,9 @@ pub fn describe(s: &Step) -> String {
         "network_status" => "Check the network".into(),
         "bluetooth_status" => "Check Bluetooth".into(),
         "now_playing" => "See what's playing".into(),
+        "system_status" => "Check how busy the computer is".into(),
+        "disk_space" => "Check the disk space".into(),
+        "sound_check" => "Check the sound quality".into(),
         "set_volume" => format!("Volume {}%", int("percent")),
         "change_volume" if int("by") < 0 => format!("Volume down {}", -int("by")),
         "change_volume" => format!("Volume up {}", int("by")),
@@ -595,6 +611,17 @@ mod tests {
             let line = describe(&step(t.name, json!({})));
             assert_ne!(line, t.name.replace('_', " "), "{}", t.name);
         }
+    }
+
+    #[test]
+    fn why_questions() {
+        assert_eq!(one("why is my computer so slow"), ("system_status".into(), json!({})));
+        assert_eq!(one("what's using all the memory"), ("system_status".into(), json!({})));
+        assert_eq!(one("how much disk space is left"), ("disk_space".into(), json!({})));
+        assert_eq!(one("why is the sound cutting out"), ("sound_check".into(), json!({})));
+        assert_eq!(one("my headphones sound terrible"), ("sound_check".into(), json!({})));
+        assert_eq!(one("why does the music sound like a phone"), ("sound_check".into(), json!({})));
+        assert_eq!(one("volume 30"), ("set_volume".into(), json!({"percent": 30})), "still the volume");
     }
 
     #[test]
