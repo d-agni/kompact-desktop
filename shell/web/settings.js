@@ -733,6 +733,21 @@ function asWhen(secs) {
 
 function renderAssistant() {
   $("as-voice").textContent = !voice ? "" : voice.ready ? `Ready, with the ${voice.model} speech model. What you say is turned into text on this PC and never kept.` : `Not set up yet. ${voice.missing}`;
+  // 20g: Accurate (small.en) or Fast (base.en); Fast needs base.en or tiny.en fetched.
+  const hearing = /** @type {HTMLSelectElement} */ ($("as-hearing"));
+  const models = voice?.models || [];
+  const quick = models.includes("base.en") || models.includes("tiny.en");
+  hearing.value = voice?.hearing || "accurate";
+  hearing.disabled = !voice?.ready || !quick || !models.includes("small.en");
+  $("as-hearing-hint").textContent = !voice?.ready
+    ? ""
+    : !models.includes("small.en")
+      ? "Only the quick speech model is here. Run “kompact-assistant-setup hearing” for the accurate one."
+      : !quick
+        ? "Only the accurate speech model is here. Fast needs the base.en model."
+        : voice.hearing === "fast"
+          ? "Fast: answers about 1.5 s sooner, but mishears more often."
+          : "Accurate: understands accents and quiet speech better, about 1.5 s slower.";
   const speak = /** @type {HTMLSelectElement} */ ($("as-speak"));
   speak.value = speech?.speak || "voice";
   speak.disabled = !speech?.ready;
@@ -1107,6 +1122,11 @@ try {
 } catch {
   // A private window: the first tab.
 }
+$("as-hearing").addEventListener("change", async (e) => {
+  const st = await asCall("set_hearing", { hearing: /** @type {HTMLSelectElement} */ (e.target).value });
+  if (st) voice = st;
+  renderAssistant();
+});
 $("as-speak").addEventListener("change", async (e) => {
   const st = await asCall("set_speak", { speak: /** @type {HTMLSelectElement} */ (e.target).value });
   if (st) speech = st;

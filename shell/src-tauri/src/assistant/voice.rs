@@ -28,6 +28,8 @@ pub const TARGET_PEAK: f64 = 24_000.0;
 pub const MAX_GAIN: f64 = 20.0;
 /// The models looked for, the most accurate first.
 pub const MODELS: [&str; 3] = ["small.en", "base.en", "tiny.en"];
+/// 20g: the order for Hearing → Fast (base.en hears a 4 s clip in ~0.9 s here, small.en ~2.4 s).
+pub const FAST_MODELS: [&str; 3] = ["base.en", "tiny.en", "small.en"];
 /// Words he's likely to hear, so whisper spells them our way.
 const PROMPT: &str = "Siva, volume, mute, unmute, Firefox, Files, terminal, desktop, Do Not Disturb, dark mode, light mode, side by side, Bluetooth, Wi-Fi, screenshot.";
 /// `PROMPT` and (19e) the routines' names, so "set up for coding" is spelled as saved.
@@ -147,10 +149,83 @@ fn data_home() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
 }
 
-/// The model to use and its name, the most accurate one present.
+// ---- Hearing: accurate or fast (20g; pure but for the file) ----
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Hearing {
+    /// The most accurate model present (small.en): the default.
+    Accurate,
+    /// The quickest good one (base.en): about 1.5 s sooner, more mishearings.
+    Fast,
+}
+
+impl Hearing {
+    pub fn parse(s: &str) -> Option<Hearing> {
+        match s.trim() {
+            "accurate" => Some(Hearing::Accurate),
+            "fast" => Some(Hearing::Fast),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Hearing::Accurate => "accurate",
+            Hearing::Fast => "fast",
+        }
+    }
+
+    fn order(self) -> [&'static str; 3] {
+        match self {
+            Hearing::Accurate => MODELS,
+            Hearing::Fast => FAST_MODELS,
+        }
+    }
+}
+
+/// `hearing=…` from the settings file; anything else keeps the default.
+pub fn parse_hearing(text: &str) -> Hearing {
+    text.lines().filter_map(|l| l.trim().strip_prefix("hearing=")).filter_map(Hearing::parse).last().unwrap_or(Hearing::Accurate)
+}
+
+pub fn hearing_text(h: Hearing) -> String {
+    format!("# how Siva hears (written by System Settings → Assistant)\nhearing={}\n", h.name())
+}
+
+/// The model `h` uses among those `present`: its first choice that is here.
+pub fn pick(h: Hearing, present: impl Fn(&str) -> bool) -> Option<&'static str> {
+    h.order().into_iter().find(|m| present(m))
+}
+
+fn hearing_file() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("kompact").join("assistant-hearing"))
+}
+
+pub fn hearing_pref() -> Hearing {
+    hearing_file().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| parse_hearing(&t)).unwrap_or(Hearing::Accurate)
+}
+
+fn model_dir() -> Option<PathBuf> {
+    Some(data_home()?.join("kompact").join("whisper"))
+}
+
+fn model_file(dir: &std::path::Path, m: &str) -> PathBuf {
+    dir.join(format!("ggml-{m}.bin"))
+}
+
+/// The models fetched, the most accurate first.
+pub fn models_here() -> Vec<&'static str> {
+    let Some(dir) = model_dir() else { return Vec::new() };
+    MODELS.into_iter().filter(|m| model_file(&dir, m).is_file()).collect()
+}
+
+/// The model to use and its name, as Hearing asks (20g), among those present.
 pub fn model() -> Option<(&'static str, PathBuf)> {
-    let dir = data_home()?.join("kompact").join("whisper");
-    MODELS.into_iter().map(|m| (m, dir.join(format!("ggml-{m}.bin")))).find(|(_, p)| p.is_file())
+    let dir = model_dir()?;
+    let m = pick(hearing_pref(), |m| model_file(&dir, m).is_file())?;
+    Some((m, model_file(&dir, m)))
 }
 
 fn on_path(program: &str) -> bool {
@@ -163,6 +238,9 @@ pub struct VoiceState {
     pub ready: bool,
     pub whisper: bool,
     pub model: Option<&'static str>,
+    /// 20g: Accurate or Fast, and the models fetched (Fast needs base.en or tiny.en).
+    pub hearing: Hearing,
+    pub models: Vec<&'static str>,
     /// What to do, when not ready.
     pub missing: Option<String>,
 }
@@ -175,7 +253,7 @@ pub fn state() -> VoiceState {
         // 19i: one command sets it up (the package and the model).
         _ => Some("Run “kompact-assistant-setup hearing” in a terminal.".into()),
     };
-    VoiceState { ready: missing.is_none(), whisper, model, missing }
+    VoiceState { ready: missing.is_none(), whisper, model, hearing: hearing_pref(), models: models_here(), missing }
 }
 
 // ---- knowing when you've finished (pure) ----
@@ -467,6 +545,20 @@ pub fn voice_state() -> VoiceState {
     state()
 }
 
+/// 20g: Settings → Assistant → Hearing.
+#[tauri::command]
+pub fn set_hearing(hearing: String) -> Result<VoiceState, String> {
+    let h = Hearing::parse(&hearing).ok_or_else(|| format!("{hearing:?} isn't accurate or fast"))?;
+    let file = hearing_file().ok_or("no home folder")?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&file, hearing_text(h)).map_err(|e| format!("can't save {}: {e}", file.display()))?;
+    let st = state();
+    info!("voice: hearing {} ({})", h.name(), st.model.unwrap_or("no model"));
+    Ok(st)
+}
+
 /// The HUD's Done (or the menu-bar item clicked while listening).
 #[tauri::command]
 pub fn voice_stop() {
@@ -614,5 +706,25 @@ mod tests {
     fn best_model_first() {
         assert_eq!(MODELS[0], "small.en");
         assert!(MODELS.contains(&"base.en"));
+    }
+
+    #[test]
+    fn hearing_fast_or_accurate() {
+        let all = |_: &str| true;
+        assert_eq!(pick(Hearing::Accurate, all), Some("small.en"));
+        assert_eq!(pick(Hearing::Fast, all), Some("base.en"));
+        // What the release fetches by default: base.en only.
+        let base = |m: &str| m == "base.en";
+        assert_eq!(pick(Hearing::Accurate, base), Some("base.en"));
+        assert_eq!(pick(Hearing::Fast, base), Some("base.en"));
+        // Fast without base.en or tiny.en still hears, with small.en.
+        assert_eq!(pick(Hearing::Fast, |m| m == "small.en"), Some("small.en"));
+        assert_eq!(pick(Hearing::Fast, |_| false), None);
+        // The settings file.
+        assert_eq!(parse_hearing(""), Hearing::Accurate);
+        assert_eq!(parse_hearing("hearing=quick\n"), Hearing::Accurate);
+        for h in [Hearing::Accurate, Hearing::Fast] {
+            assert_eq!(parse_hearing(&hearing_text(h)), h);
+        }
     }
 }

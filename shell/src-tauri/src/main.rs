@@ -250,6 +250,7 @@ fn main() {
             assistant::run::assistant_undo,
             assistant::run::assistant_heard,
             assistant::voice::voice_state,
+            assistant::voice::set_hearing,
             assistant::voice::voice_stop,
             assistant::voice::voice_cancel,
             assistant::activity::assistant_activity,
