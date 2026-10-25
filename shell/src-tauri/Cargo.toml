@@ -34,8 +34,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 # 12a: NetworkManager's signal stream (already in the tree through zbus) and timers on Tauri's
 # tokio runtime (tokio is Tauri's own; `time` turns its timer on; 12b: `sync` for the Bluetooth
-# agent's questions).
+# agent's questions; 20c: `rt` for the assistant's task-local task number).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-tokio = { version = "1", default-features = false, features = ["time", "sync"] }
+tokio = { version = "1", default-features = false, features = ["time", "sync", "rt"] }
 # 12j: statvfs for the About pane's disk space (already in the tree through Tauri).
 libc = "0.2"

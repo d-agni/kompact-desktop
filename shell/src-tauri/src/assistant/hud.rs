@@ -42,6 +42,14 @@ pub fn assistant_toggle(app: AppHandle) -> Result<(), String> {
     open(&app, how)
 }
 
+/// 20c: show the HUD as it is (a task that finished out of sight needs you: a card).
+#[tauri::command]
+pub fn hud_show(app: AppHandle) -> Result<(), String> {
+    window(&app)?.show().map_err(|e| e.to_string())?;
+    info!("assistant: HUD back for a task");
+    Ok(())
+}
+
 #[tauri::command]
 pub fn hud_hide(app: AppHandle) -> Result<(), String> {
     super::voice::cancel();

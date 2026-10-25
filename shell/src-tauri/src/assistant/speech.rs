@@ -144,8 +144,16 @@ static TURN: AtomicU64 = AtomicU64::new(0);
 /// The pw-play speaking now (0: none).
 static PLAYING: Mutex<u32> = Mutex::new(0);
 
-/// Stop speaking now.
+/// 20c: replies waiting to be said (tasks finish at their own time; each waits its turn).
+static QUEUE: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
+/// At most this many waiting; older ones are dropped (they're in the HUD anyway).
+const QUEUED: usize = 3;
+/// Whether the speaking thread is running.
+static SPEAKER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Stop speaking now, and forget what was waiting to be said.
 pub fn hush() {
+    QUEUE.lock().unwrap_or_else(|e| e.into_inner()).clear();
     TURN.fetch_add(1, Ordering::Relaxed);
     let pid = std::mem::take(&mut *PLAYING.lock().unwrap_or_else(|e| e.into_inner()));
     if pid != 0 {
@@ -156,23 +164,44 @@ pub fn hush() {
     }
 }
 
-/// Say `text` (off the main thread; returns at once). The HUD hears `kompact-assistant`
-/// `speaking` and then `spoken`, and the wave follows.
+/// Say `text` (off the main thread; returns at once), after whatever is being said (20c). The
+/// HUD hears `kompact-assistant` `speaking` and then `spoken`, and the wave follows.
 pub fn say(app: &AppHandle, text: &str) {
     let Some(text) = speakable(text) else { return };
-    let Some((piper, voice)) = installed() else { return };
-    hush();
-    let turn = TURN.load(Ordering::Relaxed);
+    if installed().is_none() {
+        return;
+    }
+    {
+        let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        q.push_back(text);
+        while q.len() > QUEUED {
+            q.pop_front();
+        }
+    }
+    if SPEAKER.swap(true, Ordering::Relaxed) {
+        return; // the speaking thread takes it next
+    }
     let app = app.clone();
-    std::thread::spawn(move || {
-        if let Err(e) = speak(&app, &piper, &voice, &text, turn) {
-            warn!("speech: {e}");
+    std::thread::spawn(move || loop {
+        loop {
+            let next = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
+            let Some(text) = next else { break };
+            let Some((piper, voice)) = installed() else { break };
+            let turn = TURN.load(Ordering::Relaxed);
+            if let Err(e) = speak(&app, &piper, &voice, &text, turn) {
+                warn!("speech: {e}");
+            }
+            if TURN.load(Ordering::Relaxed) == turn {
+                *PLAYING.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+            }
+            let _ = app.emit("kompact-assistant-level", 0.0);
+            let _ = app.emit("kompact-assistant", serde_json::json!({"state": "spoken", "detail": ""}));
         }
-        if TURN.load(Ordering::Relaxed) == turn {
-            *PLAYING.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+        SPEAKER.store(false, Ordering::Relaxed);
+        // A reply queued between the last look and now: take it on, unless another thread did.
+        if QUEUE.lock().unwrap_or_else(|e| e.into_inner()).is_empty() || SPEAKER.swap(true, Ordering::Relaxed) {
+            break;
         }
-        let _ = app.emit("kompact-assistant-level", 0.0);
-        let _ = app.emit("kompact-assistant", serde_json::json!({"state": "spoken", "detail": ""}));
     });
 }
 

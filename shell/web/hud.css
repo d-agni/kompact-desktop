@@ -28,7 +28,14 @@ body[data-mood="concerned"] { --accent: #ff7a5c; --accent-soft: rgba(255, 122, 9
 
 .top { display: flex; align-items: center; gap: 14px; }
 .head { flex: 1; min-width: 0; }
-.title { display: flex; align-items: baseline; gap: 10px; letter-spacing: 0.22em; font-size: 11px; }
+.title { display: flex; align-items: center; gap: 10px; letter-spacing: 0.22em; font-size: 11px; }
+.status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.count { color: var(--accent); letter-spacing: 0.1em; white-space: nowrap; }
+.count:empty { display: none; }
+/* 20c-2: Recent, Keep open, Make small, Close */
+.ctl { margin-left: auto; display: flex; gap: 2px; flex: 0 0 auto; }
+.ctl .icon { flex: 0 0 22px; width: 22px; height: 22px; }
+.ctl .icon[aria-pressed="true"], .ctl .icon[aria-expanded="true"] { color: var(--accent); background: rgba(90, 216, 255, 0.14); }
 .name { font-weight: 700; color: var(--accent); text-shadow: 0 0 8px var(--accent-soft); }
 .status { color: rgba(223, 246, 255, 0.6); }
 .wave { display: block; width: 300px; height: 56px; }
@@ -77,6 +84,13 @@ body[data-mood="concerned"] { --accent: #ff7a5c; --accent-soft: rgba(255, 122, 9
 .plan li.asks { color: #ff7a5c; }
 .plan li.asks::before { background: #ff7a5c; border-color: #ff7a5c; }
 .plan li.stopped { color: rgba(223, 246, 255, 0.35); text-decoration: line-through; }
+/* 20c-2: the folded plan */
+.plan-sum { display: block; margin: 8px 0 0; padding: 0; border: 0; background: none; font: inherit; font-size: 12.5px; color: rgba(223, 246, 255, 0.7); cursor: pointer; text-align: left; }
+.plan-sum[hidden] { display: none; }
+.plan-sum::after { content: " ▸"; color: var(--accent); }
+.plan-sum[aria-expanded="true"]::after { content: " ▾"; }
+.plan-sum:hover { color: #f3fbff; }
+.folded .plan { display: none; }
 .reply { margin: 6px 2px 0; font-size: 15px; line-height: 1.45; color: #f3fbff; overflow-wrap: anywhere; max-height: 150px; overflow-y: auto; }
 .reply:empty { display: none; }
 
@@ -118,6 +132,37 @@ body[data-mood="concerned"] { --accent: #ff7a5c; --accent-soft: rgba(255, 122, 9
 .buttons button.danger:hover { background: #e8564c; }
 .buttons button:focus-visible, .pill:focus-visible, .icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* 20c: the other tasks */
+.tasks { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.tasks:empty { display: none; }
+.task { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 9px; background: rgba(90, 216, 255, 0.06); border: 1px solid rgba(90, 216, 255, 0.16); font-size: 12px; }
+.task::before { content: ""; flex: 0 0 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.task.running::before { animation: breathe 0.9s ease-in-out infinite; box-shadow: 0 0 6px var(--accent); }
+.task.done { cursor: pointer; }
+.task.failed::before { background: #ffb340; }
+.task-text { flex: 0 1 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #f3fbff; }
+.task-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(223, 246, 255, 0.6); }
+.task button { border: 1px solid var(--accent-soft); border-radius: 999px; background: rgba(90, 216, 255, 0.07); color: #e6f8ff; font: inherit; font-weight: 600; }
+.task button:hover { background: rgba(90, 216, 255, 0.18); }
+.task button.small, .buttons button.small { padding: 2px 9px; font-size: 11px; }
+/* 20c-2: recent requests */
+.recent { margin-top: 10px; border-top: 1px solid rgba(90, 216, 255, 0.16); padding-top: 8px; }
+.recent[hidden] { display: none; }
+.recent-head { display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; letter-spacing: 0.2em; color: rgba(223, 246, 255, 0.5); }
+.link { border: 0; background: none; color: var(--accent); font: inherit; letter-spacing: 0.04em; font-size: 11px; cursor: pointer; padding: 2px 4px; }
+.link:hover { text-decoration: underline; }
+.recent ol { list-style: none; margin: 4px 0 0; padding: 0; max-height: 210px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.recent li button { width: 100%; display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border: 0; border-radius: 7px; background: none; font: inherit; font-size: 12px; text-align: left; cursor: pointer; color: #f3fbff; }
+.recent li button:hover { background: rgba(90, 216, 255, 0.12); }
+.r-text { flex: 0 1 auto; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r-answer { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(223, 246, 255, 0.55); }
+.recent li button.failed .r-answer { color: #ffb340; }
+.r-none { font-size: 12px; color: rgba(223, 246, 255, 0.45); padding: 4px 6px; }
+/* 20c-2: small: only the top bar */
+.mini .top { cursor: pointer; }
+.mini .heard-row, .mini .plan, .mini .plan-sum, .mini .reply, .mini .type, .mini .buttons, .mini .tasks, .mini .recent, .mini .foot { display: none !important; }
+.mini .wave { height: 28px; }
+.mini .reactor, .mini .reactor svg { flex-basis: 34px; width: 34px; height: 34px; }
 .foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .mic { flex: 1; min-width: 0; font-size: 11px; color: rgba(223, 246, 255, 0.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pill { padding: 3px 11px; font-size: 11.5px; }
@@ -125,7 +170,8 @@ body[data-mood="concerned"] { --accent: #ff7a5c; --accent-soft: rgba(255, 122, 9
 #done, #stop { display: none; }
 .s-thinking.planning #stop { display: inline-flex; }
 .s-waking #done, .s-listening #done { display: inline-flex; }
-.s-waking #speak, .s-listening #speak, .s-thinking #speak, .s-waking #kbd, .s-listening #kbd, .s-thinking #kbd, .s-typing #kbd { display: none; }
+/* 20c: Speak and Type stay while it works, for another task. */
+.s-waking #speak, .s-listening #speak, .s-waking #kbd, .s-listening #kbd, .s-typing #kbd { display: none; }
 .s-hidden .hud { display: none; }
 
 .icon { align-self: flex-start; flex: 0 0 24px; height: 24px; border: 0; border-radius: 50%; background: transparent; color: rgba(223, 246, 255, 0.6); display: grid; place-items: center; padding: 0; }

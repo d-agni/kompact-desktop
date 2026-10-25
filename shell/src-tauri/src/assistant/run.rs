@@ -161,7 +161,7 @@ impl<'a> Plan<'a> {
     fn set(&mut self, i: usize, state: &'static str) {
         if let Some(item) = self.items.get_mut(i) {
             item.state = state;
-            let _ = self.app.emit("kompact-assistant-plan", &self.items);
+            let _ = self.app.emit("kompact-assistant-plan", json!({"task": current_task(), "items": &self.items}));
         }
     }
 
@@ -173,7 +173,7 @@ impl<'a> Plan<'a> {
             }
         }
         if !self.items.is_empty() {
-            let _ = self.app.emit("kompact-assistant-plan", &self.items);
+            let _ = self.app.emit("kompact-assistant-plan", json!({"task": current_task(), "items": &self.items}));
         }
     }
 
@@ -182,13 +182,53 @@ impl<'a> Plan<'a> {
     }
 }
 
-/// 19e: the HUD's Stop: the plan running now stops before its next step.
-static STOP_PLAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// ---- 20c: tasks ----
 
+tokio::task_local! {
+    /// The task a request runs as (the HUD numbers them), so its plan, its Stop and its card are
+    /// its own while others run beside it.
+    static TASK: u64;
+}
+
+/// The task this code runs for (0 outside one).
+pub fn current_task() -> u64 {
+    TASK.try_with(|t| *t).unwrap_or(0)
+}
+
+/// Tasks asked to stop (before their next step).
+static STOPPED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+/// Requests running now, for the menu bar (it keeps its wave while any is).
+static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether this task was asked to stop (and the ask is used up).
+fn stop_asked() -> bool {
+    let t = current_task();
+    let mut list = STOPPED.lock().unwrap_or_else(|e| e.into_inner());
+    let had = list.contains(&t);
+    list.retain(|x| *x != t);
+    had
+}
+
+/// Run `fut` as task `task` (a new number when the page gives none), counted as running.
+async fn as_task<F: std::future::Future<Output = Reply>>(app: &AppHandle, task: Option<u64>, fut: F) -> Reply {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 40);
+    let id = task.unwrap_or_else(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let n = RUNNING.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let _ = app.emit("kompact-assistant-tasks", json!({"running": n}));
+    let r = TASK.scope(id, fut).await;
+    let n = RUNNING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) - 1;
+    let _ = app.emit("kompact-assistant-tasks", json!({"running": n}));
+    if n == 0 {
+        tell(app, "idle", "");
+    }
+    r
+}
+
+/// The HUD's Stop on a task: it stops before its next step.
 #[tauri::command]
-pub fn assistant_stop() {
-    info!("assistant: stop (the HUD)");
-    STOP_PLAN.store(true, std::sync::atomic::Ordering::Relaxed);
+pub fn assistant_stop(task: u64) {
+    info!("assistant: stop task {task} (the HUD)");
+    STOPPED.lock().unwrap_or_else(|e| e.into_inner()).push(task);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -248,7 +288,8 @@ pub struct Assistant {
 #[derive(Default)]
 struct Inner {
     next: u64,
-    waiting: Option<Waiting>,
+    /// 20c: the cards waiting for an answer (each task may have one), oldest first.
+    waiting: Vec<Waiting>,
     /// The last few requests' undo lists, newest last.
     undos: Vec<(u64, Vec<Undo>)>,
     /// 19k: the window or app named last, for "it", "that" and "the other one" later on.
@@ -862,11 +903,10 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, said: Vec<String>
 }
 
 async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<String>, mut undo: Vec<Undo>, mut confirmed: bool, plan: &mut Plan<'_>) -> Reply {
-    use std::sync::atomic::Ordering;
     let mut ctx = Ctx::default();
     let read_only = steps.iter().all(|s| super::tools::find(s.tool).is_some_and(|t| t.tier == super::tools::Tier::Read));
     for i in at..steps.len() {
-        if i > at && STOP_PLAN.swap(false, Ordering::Relaxed) {
+        if i > at && stop_asked() {
             info!("assistant: stopped after {i} of {} steps", steps.len());
             plan.rest(i, "stopped");
             said.push(format!("Stopped: {i} of {} done.", steps.len()));
@@ -907,7 +947,11 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
                 let prefix = said.join(" ");
                 let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
                 let card = Card { id, text: text.clone(), button };
-                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() }));
+                state.with(|inner| {
+                    inner.waiting.push(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() });
+                    let extra = inner.waiting.len().saturating_sub(6);
+                    inner.waiting.drain(..extra);
+                });
                 return Reply { text, mood: "concerned", undo: None, confirm: Some(card), plan: None, choices: Vec::new() };
             }
             Decision::Confirm { .. } | Decision::Run { .. } => {
@@ -946,7 +990,12 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
 #[tauri::command]
 /// `heard` (19j): what Siva had heard, when you typed this to put it right (the HUD's ✎): the
 /// pair is learnt.
-pub async fn assistant_ask(app: AppHandle, text: String, heard: Option<String>) -> Reply {
+pub async fn assistant_ask(app: AppHandle, text: String, heard: Option<String>, task: Option<u64>) -> Reply {
+    let a = app.clone();
+    as_task(&a, task, ask_inner(app, text, heard)).await
+}
+
+async fn ask_inner(app: AppHandle, text: String, heard: Option<String>) -> Reply {
     let text: String = text.chars().take(300).collect();
     info!("assistant: asked {text:?}");
     if !text.trim().is_empty() {
@@ -1039,9 +1088,7 @@ fn fill_in_it(steps: &mut [Step], last: Option<&str>) {
 }
 
 async fn request_inner(app: &AppHandle, text: &str) -> Reply {
-    // A new request drops one that was waiting on a card, and a Stop meant for an old one.
-    app.state::<Assistant>().with(|i| i.waiting = None);
-    STOP_PLAN.store(false, std::sync::atomic::Ordering::Relaxed);
+    // 20c: cards waiting for other tasks stay (each is answered by its own id).
     // 19e: a routine ("set up for coding") before the rules ("start coding" would open an app).
     let routines = super::routines::load();
     if let Some(r) = super::routines::invoked(text, &routines) {
@@ -1143,6 +1190,8 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
 /// 19h: what the menu bar and the HUD show: `listening` (with the microphone's name), `ready`
 /// (it gives sound), `thinking` (with what was heard), `idle`.
 pub fn tell(app: &AppHandle, state: &str, detail: &str) {
+    // 20c: other tasks still running: the menu bar keeps its "working" wave.
+    let state = if state == "idle" && RUNNING.load(std::sync::atomic::Ordering::Relaxed) > 0 { "thinking" } else { state };
     let _ = app.emit("kompact-assistant", serde_json::json!({"state": state, "detail": detail}));
 }
 
@@ -1188,7 +1237,12 @@ async fn hear(app: &AppHandle) -> Result<super::voice::Heard, String> {
 /// 19h: listen until you've finished, then do what was said. The menu bar and the HUD follow
 /// along through `kompact-assistant` and the wave through `kompact-assistant-level`.
 #[tauri::command]
-pub async fn assistant_listen(app: AppHandle) -> Reply {
+pub async fn assistant_listen(app: AppHandle, task: Option<u64>) -> Reply {
+    let a = app.clone();
+    as_task(&a, task, listen_inner(app)).await
+}
+
+async fn listen_inner(app: AppHandle) -> Reply {
     let r = match hear(&app).await {
         Ok(super::voice::Heard::Text(text)) => {
             // 19j: shown as you meant it (what Siva learnt about your voice), with what was
@@ -1238,7 +1292,8 @@ pub async fn assistant_heard(app: AppHandle, text: String) -> Reply {
             text
         }
     };
-    let waiting = app.state::<Assistant>().with(|i| i.waiting.as_ref().map(|w| (w.id, w.card.clone())));
+    // The newest card is the one a spoken "cancel" answers.
+    let waiting = app.state::<Assistant>().with(|i| i.waiting.last().map(|w| (w.id, w.card.clone())));
     let spoken = rules::spoken_answer(&text);
     match (spoken, waiting) {
         (Some(s), Some((id, card))) => match policy::confirmed(policy::Answer::Spoken(s)) {
@@ -1258,14 +1313,18 @@ pub async fn assistant_heard(app: AppHandle, text: String) -> Reply {
 /// The card's Confirm (a click or Enter on it) or Cancel. A spoken answer goes through
 /// `policy::confirmed` first (19d) and can only cancel.
 #[tauri::command]
-pub async fn assistant_answer(app: AppHandle, id: u64, confirm: bool) -> Reply {
-    let r = answer(&app, id, confirm).await;
-    aloud(&app, r, false)
+pub async fn assistant_answer(app: AppHandle, id: u64, confirm: bool, task: Option<u64>) -> Reply {
+    let a = app.clone();
+    as_task(&a, task, async move {
+        let r = answer(&app, id, confirm).await;
+        aloud(&app, r, false)
+    })
+    .await
 }
 
 async fn answer(app: &AppHandle, id: u64, confirm: bool) -> Reply {
     let app = app.clone();
-    let waiting = app.state::<Assistant>().with(|i| i.waiting.take_if(|w| w.id == id));
+    let waiting = app.state::<Assistant>().with(|i| i.waiting.iter().position(|w| w.id == id).map(|p| i.waiting.remove(p)));
     let Some(w) = waiting else { return reply("That question has gone; ask me again.", "sorry") };
     if !confirm {
         info!("assistant: cancelled {}", w.steps[w.at].tool);
@@ -1275,15 +1334,18 @@ async fn answer(app: &AppHandle, id: u64, confirm: bool) -> Reply {
         return finish(&app, said, w.undo, true);
     }
     info!("assistant: confirmed {} (clicked)", w.steps[w.at].tool);
-    STOP_PLAN.store(false, std::sync::atomic::Ordering::Relaxed);
     activity::record(&app, Kind::Confirmed, w.steps[w.at].tool, "Clicked");
     proceed(&app, w.steps, w.at, w.said, w.undo, true).await
 }
 
 #[tauri::command]
-pub async fn assistant_undo(app: AppHandle, id: u64) -> Reply {
-    let r = undo(&app, id).await;
-    aloud(&app, r, false)
+pub async fn assistant_undo(app: AppHandle, id: u64, task: Option<u64>) -> Reply {
+    let a = app.clone();
+    as_task(&a, task, async move {
+        let r = undo(&app, id).await;
+        aloud(&app, r, false)
+    })
+    .await
 }
 
 async fn undo(app: &AppHandle, id: u64) -> Reply {
@@ -1309,6 +1371,19 @@ mod tests {
 
     fn win(id: u64, name: &str, app_id: &str, title: &str, about: &str, focused: bool) -> WinCand {
         WinCand { id, name: name.into(), app_id: app_id.into(), title: title.into(), about: about.into(), focused, minimized: false }
+    }
+
+    #[test]
+    fn each_task_stops_on_its_own() {
+        tauri::async_runtime::block_on(async {
+            assistant_stop(7);
+            // Task 8 runs on; task 7 stops (once: the ask is used up).
+            assert!(!TASK.scope(8, async { stop_asked() }).await);
+            assert!(TASK.scope(7, async { stop_asked() }).await);
+            assert!(!TASK.scope(7, async { stop_asked() }).await);
+            assert_eq!(TASK.scope(42, async { current_task() }).await, 42);
+        });
+        assert_eq!(current_task(), 0, "outside a task");
     }
 
     #[test]
