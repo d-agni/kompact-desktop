@@ -7,13 +7,16 @@
 //! Speech, text and window titles stay on this PC (decided 2026-10-22). Since 20d (2026-10-25)
 //! one module goes online, for what you ask to look up (`web`: the weather, the news, facts,
 //! search results), only to its own list of hosts and as Settings → Assistant allows;
-//! `no_network` holds everything else to no connection at all.
+//! `no_network` holds everything else to no connection at all. 20d-2: an optional cloud AI
+//! (`cloud`, off until you give it a key) in the local model's place, its requests carried by
+//! `web`.
 
 // Wired to the page in 19c; until then only the tests use it.
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod activity;
 pub mod browser;
+pub mod cloud;
 pub mod diagnose;
 pub mod policy;
 pub mod refer;
@@ -35,7 +38,7 @@ mod tests {
     /// open, 20b). `web.rs` itself goes only to its `HOSTS` (its test `only_where_it_may_go`).
     #[test]
     fn no_network() {
-        let sources = [("mod.rs", include_str!("mod.rs")), ("activity.rs", include_str!("activity.rs")), ("tools.rs", include_str!("tools.rs")), ("policy.rs", include_str!("policy.rs")), ("hud.rs", include_str!("hud.rs")), ("speech.rs", include_str!("speech.rs")), ("routines.rs", include_str!("routines.rs")), ("model.rs", include_str!("model.rs")), ("diagnose.rs", include_str!("diagnose.rs")), ("learn.rs", include_str!("learn.rs")), ("refer.rs", include_str!("refer.rs")), ("rules.rs", include_str!("rules.rs")), ("run.rs", include_str!("run.rs")), ("voice.rs", include_str!("voice.rs")), ("browser.rs", include_str!("browser.rs")), ("web.rs", include_str!("web.rs"))];
+        let sources = [("mod.rs", include_str!("mod.rs")), ("activity.rs", include_str!("activity.rs")), ("tools.rs", include_str!("tools.rs")), ("policy.rs", include_str!("policy.rs")), ("hud.rs", include_str!("hud.rs")), ("speech.rs", include_str!("speech.rs")), ("routines.rs", include_str!("routines.rs")), ("model.rs", include_str!("model.rs")), ("diagnose.rs", include_str!("diagnose.rs")), ("learn.rs", include_str!("learn.rs")), ("refer.rs", include_str!("refer.rs")), ("rules.rs", include_str!("rules.rs")), ("run.rs", include_str!("run.rs")), ("voice.rs", include_str!("voice.rs")), ("browser.rs", include_str!("browser.rs")), ("web.rs", include_str!("web.rs")), ("cloud.rs", include_str!("cloud.rs"))];
         // Spelled in pieces so this list doesn't match itself.
         let clients = [["req", "west"], ["ure", "q::"], ["hy", "per"], ["Tcp", "Stream"], ["Udp", "Socket"], ["Unix", "Stream"], ["\"cu", "rl\""], ["\"wg", "et\""]];
         let addresses = [["http", "://"], ["https", "://"]];

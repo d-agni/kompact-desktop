@@ -9,7 +9,11 @@
 //! online: `internet=always` (the default, chosen 2026-10-25), `ask` (a card each time) or `off`.
 //! It also holds your town for the weather (`place=`).
 //!
-//! The parsers are pure and tested; `fetch` runs curl (call it off the main thread).
+//! 20d-2: it also carries the optional cloud AI's requests (`cloud.rs` builds them) to the
+//! provider you chose, from `PROVIDERS`, with your key in curl's config on its stdin, never on
+//! a command line.
+//!
+//! The parsers are pure and tested; `fetch` and `post` run curl (call them off the main thread).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,7 +25,37 @@ use serde_json::Value;
 use tracing::info;
 
 /// Where Siva may go, and nowhere else.
-pub const HOSTS: &[&str] = &["api.open-meteo.com", "geocoding-api.open-meteo.com", "news.google.com", "html.duckduckgo.com", "en.wikipedia.org"];
+pub const HOSTS: &[&str] = &[
+    "api.open-meteo.com", "geocoding-api.open-meteo.com", "news.google.com", "html.duckduckgo.com", "en.wikipedia.org",
+    // 20d-2: the cloud AIs (only with your key, only the one you chose).
+    "api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "api.groq.com", "openrouter.ai",
+];
+
+/// 20d-2: a cloud AI Siva can use with your key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Provider {
+    pub id: &'static str,
+    pub name: &'static str,
+    #[serde(skip)]
+    pub url: &'static str,
+    /// The model it's asked for unless you name another.
+    pub model: &'static str,
+    /// Anthropic's Messages API; the others speak OpenAI's chat completions.
+    #[serde(skip)]
+    pub anthropic: bool,
+}
+
+pub const PROVIDERS: &[Provider] = &[
+    Provider { id: "anthropic", name: "Anthropic (Claude)", url: "https://api.anthropic.com/v1/messages", model: "claude-opus-5-5", anthropic: true },
+    Provider { id: "openai", name: "OpenAI", url: "https://api.openai.com/v1/chat/completions", model: "gpt-4.1-mini", anthropic: false },
+    Provider { id: "gemini", name: "Google Gemini", url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", model: "gemini-2.5-flash", anthropic: false },
+    Provider { id: "groq", name: "Groq", url: "https://api.groq.com/openai/v1/chat/completions", model: "llama-3.3-70b-versatile", anthropic: false },
+    Provider { id: "openrouter", name: "OpenRouter", url: "https://openrouter.ai/api/v1/chat/completions", model: "openrouter/auto", anthropic: false },
+];
+
+pub fn provider(id: &str) -> Option<&'static Provider> {
+    PROVIDERS.iter().find(|p| p.id == id)
+}
 
 /// The tools that go online.
 pub const ONLINE: &[&str] = &["weather", "news", "look_up"];
@@ -189,6 +223,75 @@ fn fetch(url: &str) -> Result<String, String> {
     body.truncate(MAX_BYTES);
     info!("web: {host} answered in {} ms ({} bytes)", started.elapsed().as_millis(), body.len());
     Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// A value in curl's config file, quoted (`"` and `\` escaped): the key and the request go there,
+/// on curl's stdin, so no other program can read them from its command line.
+pub fn config_quote(s: &str) -> String {
+    let mut q = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => q.push_str("\\\\"),
+            '"' => q.push_str("\\\""),
+            '\n' => q.push_str("\\n"),
+            '\r' => q.push_str("\\r"),
+            '\t' => q.push_str("\\t"),
+            c if c.is_control() => {}
+            c => q.push(c),
+        }
+    }
+    q.push('"');
+    q
+}
+
+/// curl's config for a POST of `body` to `url` with `headers`.
+pub fn post_config(url: &str, headers: &[String], body: &str) -> String {
+    let mut c = format!("url = {}\n", config_quote(url));
+    for h in headers {
+        c.push_str(&format!("header = {}\n", config_quote(h)));
+    }
+    c.push_str(&format!("data-binary = {}\n", config_quote(body)));
+    c
+}
+
+/// 20d-2: POST `body` (JSON) to `url` (one of `HOSTS`) with `headers`, waiting up to `seconds`:
+/// the HTTP status and the body. Blocking.
+pub fn post(url: &str, headers: &[String], body: &str, seconds: u32) -> Result<(u16, String), String> {
+    use std::io::Write;
+    if !allowed(url) {
+        return Err("I'm not allowed to go there.".into());
+    }
+    let host = url.trim_start_matches("https://").split('/').next().unwrap_or("");
+    let started = Instant::now();
+    let mut child = Command::new("curl")
+        .args(["--silent", "--show-error", "--compressed", "--proto", "=https", "--max-filesize", "3000000", "--user-agent", AGENT, "--write-out", "\n%{http_code}", "--max-time"])
+        .arg(seconds.to_string())
+        .args(["--config", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| "I need curl to go online: install it with “sudo apt install curl”.".to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(post_config(url, headers, body).as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let code = out.status.code().unwrap_or(-1);
+        info!("web: {host} failed (curl {code}) after {} ms", started.elapsed().as_millis());
+        return Err(match code {
+            6 | 7 => "I can't reach the internet right now.".into(),
+            28 => "The internet is too slow right now; try again in a moment.".into(),
+            _ => "Something went wrong going online.".into(),
+        });
+    }
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let status = text.rsplit_once('\n').and_then(|(_, code)| code.trim().parse::<u16>().ok()).unwrap_or(0);
+    if let Some(i) = text.rfind('\n') {
+        text.truncate(i);
+    }
+    info!("web: {host} answered {status} in {} ms ({} bytes)", started.elapsed().as_millis(), text.len());
+    Ok((status, text))
 }
 
 fn fetch_json(url: &str) -> Result<Value, String> {

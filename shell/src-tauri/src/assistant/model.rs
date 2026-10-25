@@ -84,11 +84,17 @@ the cat sat on all the -> none"#;
 /// The instructions, the same every time (so the prompt cache can keep them), in Qwen's chat
 /// format.
 pub fn prefix() -> String {
+    format!("<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\n", instructions())
+}
+
+/// 20d-2: the instructions themselves, the same for the cloud AI (which is held to them by
+/// `read_answer` alone, without a grammar).
+pub fn instructions() -> String {
     format!(
-        "<|im_start|>system\nYou turn a person's request into calls to these desktop tools. Answer with the calls only, \
+        "You turn a person's request into calls to these desktop tools. Answer with the calls only, \
 separated by \"; \", or \"none\". The request was often spoken, so words may be misheard: if it isn't clearly something \
 these tools do, answer none. Window and app names are as the person said them (firefox, files, terminal, settings). \
-Use as few calls as needed.\n\nTools:\n{}\n\n{EXAMPLES}<|im_end|>\n<|im_start|>user\n",
+Use as few calls as needed.\n\nTools:\n{}\n\n{EXAMPLES}",
         tool_lines()
     )
 }
@@ -278,13 +284,15 @@ pub fn about_desktop(text: &str) -> bool {
 
 /// Siva, as a person to talk to. Kept the same every time, so the prompt cache keeps it.
 pub fn chat_prefix() -> String {
-    "<|im_start|>system\nYou are Siva, the assistant built into this person's Linux desktop. Talk like a warm, friendly, \
+    format!("<|im_start|>system\n{PERSONA}<|im_end|>\n")
+}
+
+/// 20d-2: who Siva is, for the cloud AI too.
+pub const PERSONA: &str = "You are Siva, the assistant built into this person's Linux desktop. Talk like a warm, friendly, \
 quick-witted person: one or two short sentences, plain words, no lists, no markdown, no emojis, and never \"as an AI\". \
 The desktop itself does what they ask (windows, apps, sound, settings, and looking up the weather, news and facts \
 online); you can't read their files or see their screen, and you say so in a few words when it matters. If you don't know something, say so. Never claim \
-you did something. \"user\" is the person; \"assistant\" is you.<|im_end|>\n"
-        .to_string()
-}
+you did something. \"user\" is the person; \"assistant\" is you.";
 
 /// The prompt for talking: who Siva is, the time, the last few exchanges, then `text`.
 pub fn chat_prompt(text: &str, history: &[(String, String)], now: &str) -> String {
@@ -430,7 +438,12 @@ pub fn ask(text: &str) -> Result<Vec<Step>, String> {
 pub fn talk(text: &str, history: &[(String, String)], now: &str) -> Result<String, String> {
     let (answer, fresh, ms) = run_model("talk", &chat_prefix(), &chat_prompt(text, history, now), &["--temp", "0.6", "-n", "48"])?;
     info!("model: talk {text:?} → {:?} in {ms} ms{}", answer.trim(), if fresh { " (prompt cache made)" } else { "" });
-    let said = tidy_talk(&answer).ok_or_else(|| "the model had nothing to say".to_string())?;
+    checked_talk(&answer)
+}
+
+/// What a model said to talk, tidied (`tidy_talk`) and never claiming an action (20a).
+pub fn checked_talk(answer: &str) -> Result<String, String> {
+    let said = tidy_talk(answer).ok_or_else(|| "the model had nothing to say".to_string())?;
     if claims_action(&said) {
         info!("model: talk claimed an action ({said:?}); said honestly instead");
         return Ok("I haven't done anything there. Tell me what to do, like “open Firefox” or “maximize the terminal”.".into());

@@ -303,6 +303,9 @@ struct Inner {
     last_window: Option<String>,
     /// 19k: the last few exchanges (what you said, what Siva said), for talking.
     pub history: std::collections::VecDeque<(String, String)>,
+    /// 20d-2: the last few exchanges of talk alone (no window or file names in Siva's side),
+    /// for the cloud AI.
+    talks: std::collections::VecDeque<(String, String)>,
 }
 
 const KEEP_UNDOS: usize = 10;
@@ -1113,17 +1116,52 @@ async fn request(app: &AppHandle, text: &str) -> Reply {
     r
 }
 
-/// 19k: talk, through the local model when it's there.
+/// 20d-2: whether a model is there for what the rules don't know: the local one, or the cloud
+/// AI when it's set up and Internet is Always.
+fn understands() -> bool {
+    super::model::state().ready || super::cloud::active().is_some()
+}
+
+/// 19f, 20d-2: what `words` mean as steps, from the cloud AI when it's in use (the local model
+/// if it fails), else the local model. Blocking.
+fn understand(words: &str) -> Result<Vec<Step>, String> {
+    if let Some(p) = super::cloud::active() {
+        match super::cloud::ask(&p, words) {
+            Ok(steps) => return Ok(steps),
+            Err(e) if super::model::state().ready => info!("assistant: the cloud AI couldn't help ({e}); the local model tries"),
+            Err(e) => return Err(e),
+        }
+    }
+    super::model::ask(words)
+}
+
+/// 19k: talk, through the cloud AI when it's in use (20d-2), else the local model.
 async fn talk(app: &AppHandle, text: &str) -> Reply {
-    if !super::model::state().ready {
+    if !understands() {
         return reply("I'm better at doing than chatting without my local model; set it up with “kompact-assistant-setup understanding”. Ask me “help” for what I can do.", "speaking");
     }
-    let history: Vec<(String, String)> = app.state::<Assistant>().with(|i| i.history.iter().cloned().collect());
+    let (history, talks): (Vec<(String, String)>, Vec<(String, String)>) = app.state::<Assistant>().with(|i| (i.history.iter().cloned().collect(), i.talks.iter().cloned().collect()));
     let now = super::diagnose::now_text(crate::datetime::load_prefs().hour24);
     let words = text.to_string();
-    match tauri::async_runtime::spawn_blocking(move || super::model::talk(&words, &history, &now)).await.unwrap_or_else(|e| Err(e.to_string())) {
+    let said = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(p) = super::cloud::active() {
+            match super::cloud::talk(&p, &words, &talks, &now) {
+                Ok(said) => return Ok(said),
+                Err(e) if super::model::state().ready => info!("assistant: the cloud AI couldn't talk ({e}); the local model answers"),
+                Err(e) => return Err(e),
+            }
+        }
+        super::model::talk(&words, &history, &now)
+    });
+    match said.await.unwrap_or_else(|e| Err(e.to_string())) {
         Ok(said) => {
             activity::record(app, Kind::Understood, "", &format!("Talk: {said}"));
+            app.state::<Assistant>().with(|i| {
+                i.talks.push_back((text.chars().take(200).collect(), said.chars().take(200).collect()));
+                while i.talks.len() > HISTORY {
+                    i.talks.pop_front();
+                }
+            });
             reply(said, "speaking")
         }
         Err(e) => {
@@ -1200,11 +1238,11 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
         Parsed::Talk(answer) => reply(answer, "speaking"),
         // 19k: not about the desktop at all ("tell me a joke"), or a remark ("there are two
         // firefox windows"): talk, never act.
-        Parsed::Unknown(_) if super::model::state().ready && (rules::is_remark(text) || !super::model::about_desktop(text)) => talk(app, text).await,
+        Parsed::Unknown(_) if understands() && (rules::is_remark(text) || !super::model::about_desktop(text)) => talk(app, text).await,
         // 19f, 19l: the rules do what they know; only the parts they don't go to the local model,
         // one short request at a time, and only its steps about your words are kept. Its steps go
         // through `policy` like any others.
-        Parsed::Unknown(_) if super::model::state().ready => {
+        Parsed::Unknown(_) if understands() => {
             let parts = rules::clauses(text).unwrap_or_default();
             let mut steps: Vec<Step> = Vec::new();
             let mut guessed: Vec<String> = Vec::new();
@@ -1214,7 +1252,7 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
                     Ok(known) => steps.extend(known),
                     Err(clause) => {
                         let words = clause.clone();
-                        match tauri::async_runtime::spawn_blocking(move || super::model::ask(&words)).await.unwrap_or_else(|e| Err(e.to_string())) {
+                        match tauri::async_runtime::spawn_blocking(move || understand(&words)).await.unwrap_or_else(|e| Err(e.to_string())) {
                             Ok(guess) => {
                                 let n = guess.len();
                                 let kept = super::model::keep_grounded(guess, &clause);
@@ -1260,7 +1298,7 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
             reply(format!("Sorry, I don't understand “{part}” yet. Ask me “help” for ideas."), "sorry")
         }
         // 20d: a question of fact with the internet off: an answer in words, if the model's here.
-        Parsed::Steps(steps) if steps.iter().all(|s| s.tool == "look_up") && super::web::load_prefs().mode == super::web::Mode::Off && super::model::state().ready => talk(app, text).await,
+        Parsed::Steps(steps) if steps.iter().all(|s| s.tool == "look_up") && super::web::load_prefs().mode == super::web::Mode::Off && understands() => talk(app, text).await,
         Parsed::Steps(mut steps) => {
             let last = app.state::<Assistant>().with(|i| i.last_window.clone());
             fill_in_it(&mut steps, last.as_deref());

@@ -454,6 +454,15 @@
         <div class="row"><span class="row-label" id="as-net-label">Look things up online<span class="hint" id="as-net-hint">The weather, the news (by topic too), facts and search results, from free services: Open-Meteo, Google News, Wikipedia, DuckDuckGo. Only what you ask about is sent; never your voice, windows or files.</span></span><select id="as-net" class="select" aria-labelledby="as-net-label"><option value="always">Always</option><option value="ask">Ask Each Time</option><option value="off">Off</option></select></div>
         <div class="row"><label class="row-label" for="as-town">Your town<span class="hint" id="as-town-hint">For “what's the weather” and local news. You can also say “I live in Chennai”.</span></label><input id="as-town" class="text-field" type="text" maxlength="80" autocomplete="off" spellcheck="false"></div>
       </section>
+      <!-- 20d-2 -->
+      <h2 class="group-title">Cloud AI</h2>
+      <section class="card">
+        <label class="row"><span class="row-label">Use a cloud AI<span class="hint" id="as-cloud-hint">Optional. With your own key, a cloud AI understands and talks in place of the small model on this PC. It's given only your words, never your windows, files or screen, and Siva still asks before anything drastic. Only while Internet is Always.</span></span><input id="as-cloud-on" class="switch" type="checkbox" role="switch"></label>
+        <div class="row"><span class="row-label" id="as-cloud-provider-label">Service</span><select id="as-cloud-provider" class="select" aria-labelledby="as-cloud-provider-label"></select></div>
+        <div class="row"><label class="row-label" for="as-cloud-model">Model<span class="hint">Leave it empty for the service's own.</span></label><input id="as-cloud-model" class="text-field" type="text" maxlength="120" autocomplete="off" spellcheck="false"></div>
+        <div class="row"><label class="row-label" for="as-cloud-key">Key<span class="hint" id="as-cloud-key-hint">From the service's website. Kept in your home folder, readable by you alone.</span></label><input id="as-cloud-key" class="text-field" type="password" maxlength="300" autocomplete="off" spellcheck="false"></div>
+        <div class="row"><span class="row-label">Try it<span class="hint" id="as-cloud-result"></span></span><button id="as-cloud-forget" class="btn">Forget Key</button><button id="as-cloud-test" class="btn">Test</button></div>
+      </section>
       <h2 class="group-title">What it may do</h2>
       <section class="card">
         <div class="row"><span class="row-label">Volume, music, windows, desktops, Wi-Fi, Bluetooth, Do Not Disturb, dark mode, opening apps<span class="hint">Done at once, with Undo.</span></span></div>

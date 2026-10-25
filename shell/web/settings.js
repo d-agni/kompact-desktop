@@ -674,6 +674,8 @@ let speech = null;
 let model = null;
 /** 20d @type {{mode: "always" | "ask" | "off", place: string, zone_place: string, curl: boolean} | null} */
 let internet = null;
+/** 20d-2: Settings → Assistant → Cloud AI (`cloud_state`). @type {any} */
+let cloud = null;
 
 /** @param {string} cmd @param {Record<string, unknown>} [args] */
 function asCall(cmd, args) {
@@ -689,9 +691,10 @@ function asCall(cmd, args) {
 async function loadAssistant() {
   void loadRoutines();
   void loadLearnt();
-  const [list, v, sp, md, net] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state"), asCall("model_state"), asCall("internet_state")]);
+  const [list, v, sp, md, net, cl] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state"), asCall("model_state"), asCall("internet_state"), asCall("cloud_state")]);
   model = md;
   internet = net;
+  cloud = cl;
   activity = list || [];
   voice = v;
   speech = sp;
@@ -744,6 +747,7 @@ function renderAssistant() {
       ? `Ready (${model.model}): “I can't hear anything”, “get the browser out of the way”. A second or two; a guess of several steps asks first.`
       : `Not set up yet. ${model.missing}`;
   renderInternet();
+  renderCloud();
   renderActivity();
 }
 
@@ -766,6 +770,62 @@ async function setInternet(mode, place) {
   const st = await asCall("set_internet", { mode, place });
   if (st) internet = st;
   renderInternet();
+  // 20d-2: the cloud AI is used only while Internet is Always.
+  cloud = (await asCall("cloud_state")) || cloud;
+  renderCloud();
+}
+
+/** 20d-2 */
+function renderCloud() {
+  if (!cloud) return;
+  const on = /** @type {HTMLInputElement} */ ($("as-cloud-on"));
+  on.checked = cloud.on;
+  const pick = /** @type {HTMLSelectElement} */ ($("as-cloud-provider"));
+  if (pick.options.length !== cloud.providers.length) {
+    pick.replaceChildren(...cloud.providers.map((/** @type {{id: string, name: string}} */ p) => new Option(p.name, p.id)));
+  }
+  pick.value = cloud.provider;
+  const chosen = cloud.providers.find((/** @type {{id: string}} */ p) => p.id === cloud.provider);
+  const model = /** @type {HTMLInputElement} */ ($("as-cloud-model"));
+  if (document.activeElement !== model) model.value = cloud.model;
+  model.placeholder = chosen?.model || "";
+  const key = /** @type {HTMLInputElement} */ ($("as-cloud-key"));
+  key.value = "";
+  key.placeholder = cloud.has_key ? `Saved${cloud.key_end ? `, ends in …${cloud.key_end}` : ""}` : "Paste your key";
+  /** @type {HTMLButtonElement} */ ($("as-cloud-forget")).disabled = !cloud.has_key;
+  /** @type {HTMLButtonElement} */ ($("as-cloud-test")).disabled = !cloud.has_key;
+  $("as-cloud-key-hint").textContent = cloud.has_key ? "Saved in your home folder, readable by you alone. Paste a new one to replace it." : "From the service's website. Kept in your home folder, readable by you alone.";
+  $("as-cloud-hint").textContent = !cloud.on
+    ? "Optional. With your own key, a cloud AI understands and talks in place of the small model on this PC. It's given only your words, never your windows, files or screen, and Siva still asks before anything drastic. Only while Internet is Always."
+    : cloud.not_used
+      ? `Not in use: ${cloud.not_used}. The model on this PC answers meanwhile.`
+      : `In use (${chosen?.name || cloud.provider}). If it fails, the model on this PC answers instead.`;
+}
+
+/** @param {string | null} key a new key, "" to forget it, null to keep it */
+async function setCloud(key) {
+  const st = await asCall("set_cloud", {
+    on: /** @type {HTMLInputElement} */ ($("as-cloud-on")).checked,
+    provider: /** @type {HTMLSelectElement} */ ($("as-cloud-provider")).value,
+    model: /** @type {HTMLInputElement} */ ($("as-cloud-model")).value,
+    key,
+  });
+  if (st) cloud = st;
+  $("as-cloud-result").textContent = "";
+  renderCloud();
+}
+
+async function testCloud() {
+  if (!tauri) return;
+  const out = $("as-cloud-result");
+  out.textContent = "Asking…";
+  out.classList.remove("error");
+  try {
+    out.textContent = await tauri.core.invoke("cloud_test");
+  } catch (e) {
+    out.textContent = String(e);
+    out.classList.add("error");
+  }
 }
 
 function renderActivity() {
@@ -978,6 +1038,19 @@ $("as-rt-save").addEventListener("click", async () => {
 
 $("as-net").addEventListener("change", (e) => void setInternet(/** @type {HTMLSelectElement} */ (e.target).value, internet?.place || ""));
 $("as-town").addEventListener("change", (e) => void setInternet(internet?.mode || "always", /** @type {HTMLInputElement} */ (e.target).value));
+$("as-cloud-on").addEventListener("change", () => void setCloud(null));
+$("as-cloud-provider").addEventListener("change", () => {
+  // Another service: its own model, not the last one's.
+  /** @type {HTMLInputElement} */ ($("as-cloud-model")).value = "";
+  void setCloud(null);
+});
+$("as-cloud-model").addEventListener("change", () => void setCloud(null));
+$("as-cloud-key").addEventListener("change", (e) => {
+  const k = /** @type {HTMLInputElement} */ (e.target).value.trim();
+  if (k) void setCloud(k);
+});
+$("as-cloud-forget").addEventListener("click", () => void setCloud(""));
+$("as-cloud-test").addEventListener("click", () => void testCloud());
 $("as-speak").addEventListener("change", async (e) => {
   const st = await asCall("set_speak", { speak: /** @type {HTMLSelectElement} */ (e.target).value });
   if (st) speech = st;
