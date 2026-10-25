@@ -31,6 +31,90 @@ const AGENT_PATH: &str = "/org/kompact/BluetoothAgent";
 const DISCOVERY: Duration = Duration::from_secs(60);
 /// How long a pairing question waits for an answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
+/// fix/bluetooth: how long "Pair Again" waits for the device to show up in pairing mode.
+const FIND_AGAIN: Duration = Duration::from_secs(30);
+/// After a scan is paused, before connecting (a CSR dongle can't scan and page at once).
+const SCAN_SETTLE: Duration = Duration::from_millis(400);
+
+// ---- What went wrong (pure) ----
+
+/// fix/bluetooth: a BlueZ failure, sorted by what to do about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Problem {
+    /// `br-connection-key-missing`: the device forgot this computer (paired with a phone since,
+    /// or reset): only pairing again helps.
+    KeyMissing,
+    /// Page / connection timeouts: off, out of range, or busy with a phone.
+    NoAnswer,
+    /// It said no (wrong code, refused).
+    Refused,
+    /// `br-connection-profile-unavailable`: no audio profile to take it (the sound system).
+    NoProfile,
+    /// `InProgress`, `Busy`: something else is already connecting it.
+    Busy,
+    AlreadyPaired,
+    Cancelled,
+    Other,
+}
+
+/// What a BlueZ error is: its D-Bus name's last part (`Failed`, `AuthenticationFailed`, …) and
+/// its message (`br-connection-key-missing`, `Page Timeout`, …).
+pub fn classify(name: &str, message: &str) -> Problem {
+    let m = message.to_lowercase();
+    match name {
+        _ if m.contains("key-missing") || m.contains("key missing") => Problem::KeyMissing,
+        "AuthenticationCanceled" => Problem::Cancelled,
+        "AuthenticationFailed" | "AuthenticationRejected" => Problem::Refused,
+        "AuthenticationTimeout" | "ConnectionAttemptFailed" => Problem::NoAnswer,
+        "AlreadyExists" => Problem::AlreadyPaired,
+        "InProgress" | "Busy" => Problem::Busy,
+        _ if m.contains("profile-unavailable") || m.contains("profile unavailable") => Problem::NoProfile,
+        _ if m.contains("timeout") || m.contains("page-timeout") || m.contains("abort-by-local") || m.contains("host is down") || m.contains("connection-unknown") => Problem::NoAnswer,
+        _ if m.contains("refused") || m.contains("rejected") || m.contains("not-allowed") => Problem::Refused,
+        _ if m.contains("in progress") || m.contains("busy") => Problem::Busy,
+        _ => Problem::Other,
+    }
+}
+
+/// What to tell the person. `KeyMissing` starts with `key-missing:`, so the page offers "Pair
+/// Again".
+pub fn explain(problem: Problem, name: &str, message: &str) -> String {
+    match problem {
+        Problem::KeyMissing => format!("key-missing: {name} has forgotten this computer (paired with another device since, or reset). Put it in pairing mode and press Pair Again."),
+        Problem::NoAnswer => format!("{name} didn't answer. Is it on and close by, and not connected to your phone? For pairing, put it in pairing mode first."),
+        Problem::Refused => format!("{name} refused (a wrong code, or it doesn't accept this computer)."),
+        Problem::NoProfile => format!("{name} connected, but nothing took its sound: the sound system may be restarting. Try Connect again."),
+        Problem::Busy => format!("{name} is already being connected; wait a moment."),
+        Problem::AlreadyPaired => format!("{name} is already paired."),
+        Problem::Cancelled => "Cancelled.".into(),
+        Problem::Other if message.is_empty() => format!("{name}: it didn't work."),
+        Problem::Other => format!("{name}: {message}"),
+    }
+}
+
+/// Worth one more try at once (the radio missed it).
+pub fn retry_helps(p: Problem) -> bool {
+    matches!(p, Problem::NoAnswer | Problem::NoProfile)
+}
+
+// ---- Reconnecting (pure) ----
+
+/// The addresses of the devices to reconnect, one a line.
+pub fn parse_remembered(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in text.lines().map(str::trim) {
+        let ok = l.len() == 17 && l.split(':').count() == 6 && l.split(':').all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()));
+        if ok && !out.iter().any(|o| o.eq_ignore_ascii_case(l)) {
+            out.push(l.to_uppercase());
+        }
+    }
+    out
+}
+
+/// Of `devices`, the paired ones remembered and not connected now: the ones to reconnect.
+pub fn to_reconnect<'a>(remembered: &[String], devices: &'a [Device]) -> Vec<&'a Device> {
+    devices.iter().filter(|d| d.paired && !d.connected && remembered.iter().any(|r| r.eq_ignore_ascii_case(&d.address))).collect()
+}
 
 // ---- The pure part ----
 
@@ -127,6 +211,13 @@ async fn objects() -> Result<Objects, String> {
 
 fn get<T: TryFrom<OwnedValue>>(props: &HashMap<String, OwnedValue>, key: &str) -> Option<T> {
     props.get(key).and_then(|v| T::try_from(v.clone()).ok())
+}
+
+/// Whether the first adapter is on.
+fn adapter_powered(objs: &Objects) -> Option<bool> {
+    let path = adapter_of(objs)?;
+    let a = objs.get(&OwnedObjectPath::try_from(path.as_str()).ok()?)?.get("org.bluez.Adapter1")?;
+    get::<bool>(a, "Powered")
 }
 
 /// The first adapter's path.
@@ -228,21 +319,94 @@ fn device_path(path: &str) -> Result<String, String> {
     (path.starts_with("/org/bluez/") && ObjectPath::try_from(path).is_ok()).then(|| path.to_string()).ok_or_else(|| "not a Bluetooth device".into())
 }
 
+/// A BlueZ error as a `Problem` and its message.
+fn problem(e: &zbus::Error) -> (Problem, String) {
+    match e {
+        zbus::Error::MethodError(name, msg, _) => {
+            let n = name.as_str().rsplit('.').next().unwrap_or("").to_string();
+            let m = msg.clone().unwrap_or_default();
+            (classify(&n, &m), if m.is_empty() { n } else { m })
+        }
+        other => (Problem::Other, other.to_string()),
+    }
+}
+
+/// fix/bluetooth: stop looking for devices while connecting (a CSR 4.0 dongle, this PC's, can't
+/// look and connect at once: the connection times out). Whether it was looking.
+async fn pause_scan() -> bool {
+    let Ok(path) = adapter().await else { return false };
+    let Ok(a) = proxy(&path, "org.bluez.Adapter1").await else { return false };
+    if !a.get_property::<bool>("Discovering").await.unwrap_or(false) {
+        return false;
+    }
+    let _ = a.call::<_, _, ()>("StopDiscovery", &()).await;
+    info!("bluetooth: looking paused while connecting");
+    tokio::time::sleep(SCAN_SETTLE).await;
+    true
+}
+
+async fn resume_scan(was: bool) {
+    if !was {
+        return;
+    }
+    let Ok(path) = adapter().await else { return };
+    if let Ok(a) = proxy(&path, "org.bluez.Adapter1").await {
+        if a.call::<_, _, ()>("StartDiscovery", &()).await.is_ok() {
+            info!("bluetooth: looking again");
+        }
+    }
+}
+
+/// Call `method` on the device, once more if the radio missed it; the problem if it failed.
+async fn call_device(d: &zbus::Proxy<'_>, method: &str, name: &str) -> Result<(), (Problem, String)> {
+    let mut last = (Problem::Other, String::new());
+    for attempt in 0..2 {
+        match d.call::<_, _, ()>(method, &()).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = problem(&e);
+                warn!("bluetooth: {method} {name} failed ({:?}): {}", last.0, last.1);
+                if attempt == 0 && retry_helps(last.0) {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    Err(last)
+}
+
+async fn alias(d: &zbus::Proxy<'_>) -> String {
+    d.get_property::<String>("Alias").await.unwrap_or_else(|_| "The device".into())
+}
+
 #[tauri::command]
 pub async fn bluetooth_connect(path: String) -> Result<(), String> {
     let d = proxy(&device_path(&path)?, "org.bluez.Device1").await?;
-    let name: String = d.get_property("Alias").await.unwrap_or_default();
+    let name = alias(&d).await;
     info!("bluetooth: connecting {name}");
-    d.call::<_, _, ()>("Connect", &()).await.map_err(|e| format!("Couldn't connect {name}: {}", short(&e)))?;
-    info!("bluetooth: {name} connected");
-    Ok(())
+    let scanning = pause_scan().await;
+    let r = call_device(&d, "Connect", &name).await;
+    resume_scan(scanning).await;
+    match r {
+        Ok(()) => {
+            info!("bluetooth: {name} connected");
+            remember(&d, true).await;
+            Ok(())
+        }
+        Err((p, m)) => Err(explain(p, &name, &m)),
+    }
 }
 
 #[tauri::command]
 pub async fn bluetooth_disconnect(path: String) -> Result<(), String> {
     let d = proxy(&device_path(&path)?, "org.bluez.Device1").await?;
-    d.call::<_, _, ()>("Disconnect", &()).await.map_err(|e| format!("Couldn't disconnect: {}", short(&e)))?;
-    info!("bluetooth: disconnected {path}");
+    let name = alias(&d).await;
+    d.call::<_, _, ()>("Disconnect", &()).await.map_err(|e| explain(problem(&e).0, &name, &problem(&e).1))?;
+    // You disconnected it: don't reconnect it by yourself.
+    remember(&d, false).await;
+    info!("bluetooth: disconnected {name}");
     Ok(())
 }
 
@@ -251,43 +415,150 @@ pub async fn bluetooth_disconnect(path: String) -> Result<(), String> {
 pub async fn bluetooth_pair(path: String) -> Result<(), String> {
     let path = device_path(&path)?;
     let d = proxy(&path, "org.bluez.Device1").await?;
-    let name: String = d.get_property("Alias").await.unwrap_or_default();
+    let name = alias(&d).await;
     info!("bluetooth: pairing {name}");
-    d.call::<_, _, ()>("Pair", &()).await.map_err(|e| format!("Couldn't pair {name}: {}", short(&e)))?;
-    let _ = d.set_property("Trusted", true).await;
-    info!("bluetooth: {name} paired");
-    if let Err(e) = d.call::<_, _, ()>("Connect", &()).await {
-        info!("bluetooth: {name} paired, not connected: {}", short(&e));
+    let scanning = pause_scan().await;
+    let r = pair_and_connect(&d, &name).await;
+    resume_scan(scanning && r.is_err()).await;
+    r
+}
+
+async fn pair_and_connect(d: &zbus::Proxy<'_>, name: &str) -> Result<(), String> {
+    match call_device(d, "Pair", name).await {
+        Ok(()) | Err((Problem::AlreadyPaired, _)) => {}
+        Err((p, m)) => return Err(explain(p, name, &m)),
     }
-    Ok(())
+    let _ = d.set_property("Trusted", true).await;
+    info!("bluetooth: {name} paired and trusted");
+    match call_device(d, "Connect", name).await {
+        Ok(()) => {
+            info!("bluetooth: {name} connected");
+            remember(d, true).await;
+            Ok(())
+        }
+        Err((p, m)) => {
+            info!("bluetooth: {name} paired, not connected: {m}");
+            Err(format!("{name} is paired, but didn't connect yet: {}", explain(p, name, &m).trim_start_matches("key-missing: ")))
+        }
+    }
+}
+
+/// fix/bluetooth: "Pair Again" for a device that forgot this computer (key missing): forget it,
+/// look for it again (it must be in pairing mode), then pair, trust and connect.
+#[tauri::command]
+pub async fn bluetooth_repair(path: String) -> Result<(), String> {
+    let path = device_path(&path)?;
+    let d = proxy(&path, "org.bluez.Device1").await?;
+    let name = alias(&d).await;
+    let address: String = d.get_property("Address").await.map_err(|e| e.to_string())?;
+    info!("bluetooth: pairing {name} again");
+    let adapter_path = adapter().await?;
+    let a = proxy(&adapter_path, "org.bluez.Adapter1").await?;
+    let p = OwnedObjectPath::try_from(path.as_str()).map_err(|e| e.to_string())?;
+    a.call::<_, _, ()>("RemoveDevice", &(p,)).await.map_err(|e| format!("Couldn't forget {name}: {}", problem(&e).1))?;
+    let _ = a.call::<_, _, ()>("StartDiscovery", &()).await;
+    let started = std::time::Instant::now();
+    let mut found = None;
+    while started.elapsed() < FIND_AGAIN {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Ok(objs) = objects().await {
+            found = devices_of(&objs, &adapter_path).into_iter().find(|x| x.address.eq_ignore_ascii_case(&address)).map(|x| x.path);
+            if found.is_some() {
+                break;
+            }
+        }
+    }
+    let _ = a.call::<_, _, ()>("StopDiscovery", &()).await;
+    let Some(found) = found else {
+        return Err(format!("{name} didn't show up. Put it in pairing mode (usually: hold its button until the light flashes), then pair it from Nearby Devices."));
+    };
+    info!("bluetooth: found {name} again after {} ms", started.elapsed().as_millis());
+    tokio::time::sleep(SCAN_SETTLE).await;
+    let d = proxy(&found, "org.bluez.Device1").await?;
+    pair_and_connect(&d, &name).await
 }
 
 #[tauri::command]
 pub async fn bluetooth_forget(path: String) -> Result<(), String> {
     let path = device_path(&path)?;
+    if let Ok(d) = proxy(&path, "org.bluez.Device1").await {
+        remember(&d, false).await;
+    }
     let a = proxy(&adapter().await?, "org.bluez.Adapter1").await?;
     let p = OwnedObjectPath::try_from(path.as_str()).map_err(|e| e.to_string())?;
-    a.call::<_, _, ()>("RemoveDevice", &(p,)).await.map_err(|e| format!("Couldn't remove it: {}", short(&e)))?;
+    a.call::<_, _, ()>("RemoveDevice", &(p,)).await.map_err(|e| format!("Couldn't remove it: {}", problem(&e).1))?;
     info!("bluetooth: forgot {path}");
     Ok(())
 }
 
-/// BlueZ's errors without the D-Bus noise ("org.bluez.Error.Failed: br-connection-…").
-fn short(e: &zbus::Error) -> String {
-    match e {
-        zbus::Error::MethodError(name, msg, _) => {
-            let n = name.as_str().rsplit('.').next().unwrap_or("");
-            match (n, msg.as_deref()) {
-                ("AuthenticationFailed" | "AuthenticationRejected", _) => "the device refused (wrong code?)".into(),
-                ("AuthenticationCanceled", _) => "cancelled".into(),
-                ("AuthenticationTimeout" | "ConnectionAttemptFailed", _) => "the device didn't answer".into(),
-                ("AlreadyExists", _) => "already paired".into(),
-                ("InProgress", _) => "already under way".into(),
-                (_, Some(m)) if !m.is_empty() => m.to_string(),
-                _ => n.to_string(),
+// ---- Reconnecting ----
+
+fn remembered_file() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local").join("state")))?;
+    Some(base.join("kompact").join("bluetooth-reconnect"))
+}
+
+fn remembered() -> Vec<String> {
+    remembered_file().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| parse_remembered(&t)).unwrap_or_default()
+}
+
+/// Add the device to (or take it off) the ones to reconnect.
+async fn remember(d: &zbus::Proxy<'_>, on: bool) {
+    let Ok(address) = d.get_property::<String>("Address").await else { return };
+    remember_address(&address, on);
+}
+
+fn remember_address(address: &str, on: bool) {
+    let mut list = remembered();
+    let had = list.iter().any(|a| a.eq_ignore_ascii_case(address));
+    if on == had {
+        return;
+    }
+    if on {
+        list.push(address.to_uppercase());
+    } else {
+        list.retain(|a| !a.eq_ignore_ascii_case(address));
+    }
+    let Some(f) = remembered_file() else { return };
+    if let Some(dir) = f.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&f, list.iter().map(|a| format!("{a}\n")).collect::<String>());
+}
+
+/// fix/bluetooth: connect the remembered devices that aren't (after login, a restart, or
+/// Bluetooth switched on): a few tries each, as headsets often wake slowly.
+async fn reconnect(why: &str) {
+    let list = remembered();
+    if list.is_empty() {
+        return;
+    }
+    for attempt in 1..=3 {
+        let Ok(objs) = objects().await else { return };
+        let Some(adapter) = adapter_of(&objs) else { return };
+        let devices = devices_of(&objs, &adapter);
+        let todo: Vec<(String, String)> = to_reconnect(&list, &devices).into_iter().map(|d| (d.path.clone(), d.name.clone())).collect();
+        if todo.is_empty() {
+            return;
+        }
+        for (path, name) in todo {
+            info!("bluetooth: reconnecting {name} ({why}, try {attempt})");
+            let Ok(d) = proxy(&path, "org.bluez.Device1").await else { continue };
+            match d.call::<_, _, ()>("Connect", &()).await {
+                Ok(()) => info!("bluetooth: {name} reconnected"),
+                Err(e) => {
+                    let (p, m) = problem(&e);
+                    info!("bluetooth: {name} didn't reconnect ({p:?}): {m}");
+                    if p == Problem::KeyMissing {
+                        // Only pairing again helps; the page says so on Connect.
+                        remember_address(&devices.iter().find(|x| x.path == path).map(|x| x.address.clone()).unwrap_or_default(), false);
+                    }
+                }
             }
         }
-        other => other.to_string(),
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
@@ -536,7 +807,13 @@ pub fn start(app: AppHandle) {
             Err(e) => return warn!("bluetooth: can't watch BlueZ: {e}"),
         };
         info!("bluetooth: watching BlueZ");
+        // fix/bluetooth: the devices you had connected, back (after login or a restart).
+        tauri::async_runtime::spawn(async {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            reconnect("the shell started").await;
+        });
         let agent = Agent { app: app.clone() };
+        let mut powered = objects().await.ok().and_then(|o| adapter_powered(&o));
         let mut last = std::time::Instant::now() - Duration::from_secs(1);
         let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         while stream.next().await.is_some() {
@@ -545,6 +822,23 @@ pub fn start(app: AppHandle) {
             if last.elapsed() >= Duration::from_millis(700) {
                 last = std::time::Instant::now();
                 let _ = app.emit("kompact-bluetooth-changed", ());
+                // fix/bluetooth: Bluetooth switched on: reconnect; and whatever connects (even
+                // by itself) is reconnected next time.
+                if let Ok(objs) = objects().await {
+                    let now = adapter_powered(&objs);
+                    if powered == Some(false) && now == Some(true) {
+                        tauri::async_runtime::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            reconnect("Bluetooth switched on").await;
+                        });
+                    }
+                    powered = now;
+                    if let Some(adapter) = adapter_of(&objs) {
+                        for d in devices_of(&objs, &adapter).iter().filter(|d| d.connected && d.paired) {
+                            remember_address(&d.address, true);
+                        }
+                    }
+                }
             } else if !pending.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 let (app, pending) = (app.clone(), pending.clone());
                 tauri::async_runtime::spawn(async move {
@@ -623,6 +917,35 @@ mod tests {
     fn bt_live() {
         let state = tauri::async_runtime::block_on(bluetooth_state()).expect("bluetooth state");
         println!("{}", serde_json::to_string_pretty(&state).unwrap());
+    }
+
+    #[test]
+    fn what_went_wrong() {
+        // From this PC's logs, 2026-10-25.
+        assert_eq!(classify("Failed", "br-connection-key-missing"), Problem::KeyMissing);
+        assert_eq!(classify("Failed", "Page Timeout"), Problem::NoAnswer);
+        assert_eq!(classify("Failed", "br-connection-page-timeout"), Problem::NoAnswer);
+        assert_eq!(classify("AuthenticationTimeout", ""), Problem::NoAnswer);
+        assert_eq!(classify("ConnectionAttemptFailed", "Page Timeout"), Problem::NoAnswer);
+        assert_eq!(classify("Failed", "br-connection-profile-unavailable"), Problem::NoProfile);
+        assert_eq!(classify("AuthenticationFailed", ""), Problem::Refused);
+        assert_eq!(classify("Failed", "br-connection-refused"), Problem::Refused);
+        assert_eq!(classify("InProgress", "In Progress"), Problem::Busy);
+        assert_eq!(classify("AlreadyExists", "Already Exists"), Problem::AlreadyPaired);
+        assert_eq!(classify("Failed", "something new"), Problem::Other);
+        assert!(explain(Problem::KeyMissing, "OnePlus Nord Buds 2r", "").starts_with("key-missing: OnePlus Nord Buds 2r has forgotten this computer"), "the page offers Pair Again");
+        assert!(explain(Problem::NoAnswer, "Buds", "").contains("pairing mode"));
+        assert!(retry_helps(Problem::NoAnswer) && !retry_helps(Problem::KeyMissing) && !retry_helps(Problem::Refused));
+    }
+
+    #[test]
+    fn reconnecting() {
+        let list = parse_remembered("0b:ef:24:8f:e2:cb\nnot an address\n0B:EF:24:8F:E2:CB\nAA:BB:CC:DD:EE:FF\n");
+        assert_eq!(list, ["0B:EF:24:8F:E2:CB", "AA:BB:CC:DD:EE:FF"], "valid, once, upper case");
+        let d = |addr: &str, paired, connected| Device { path: format!("/org/bluez/hci0/dev_{addr}"), address: addr.into(), name: addr.into(), kind: "headphones", paired, connected, battery: None, rssi: None };
+        let devices = vec![d("0B:EF:24:8F:E2:CB", true, false), d("AA:BB:CC:DD:EE:FF", true, true), d("11:22:33:44:55:66", true, false)];
+        let todo: Vec<&str> = to_reconnect(&list, &devices).iter().map(|x| x.address.as_str()).collect();
+        assert_eq!(todo, ["0B:EF:24:8F:E2:CB"], "remembered, paired, not connected; a device never connected here isn't");
     }
 
     #[test]

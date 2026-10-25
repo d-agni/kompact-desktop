@@ -208,6 +208,7 @@ fn main() {
             bluetooth::bluetooth_disconnect,
             bluetooth::bluetooth_pair,
             bluetooth::bluetooth_forget,
+            bluetooth::bluetooth_repair,
             bluetooth::bluetooth_pending,
             bluetooth::bluetooth_answer,
             sound::sound_state,
