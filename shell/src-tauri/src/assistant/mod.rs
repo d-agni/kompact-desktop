@@ -4,8 +4,10 @@
 //! 19c-2); hearing you (`voice`, 19d); the HUD under the menu bar (`hud`, 19h, which replaced the
 //! character of 19b); speaking the replies (`speech`, 19h-2); routines (`routines`, 19e); a local model for what the rules don't know (`model`, 19f); answers about the desktop's own state (`diagnose`, 19g); learning your voice (`learn`, 19j); which window you mean (`refer`, 19k).
 //!
-//! Nothing in the assistant opens a network connection: speech, text and window titles stay on
-//! this PC (decided 2026-10-22). `no_network` keeps it so.
+//! Speech, text and window titles stay on this PC (decided 2026-10-22). Since 20d (2026-10-25)
+//! one module goes online, for what you ask to look up (`web`: the weather, the news, facts,
+//! search results), only to its own list of hosts and as Settings → Assistant allows;
+//! `no_network` holds everything else to no connection at all.
 
 // Wired to the page in 19c; until then only the tests use it.
 #![cfg_attr(not(test), allow(dead_code))]
@@ -24,25 +26,29 @@ pub mod learn;
 pub mod model;
 pub mod tools;
 pub mod voice;
+pub mod web;
 
 #[cfg(test)]
 mod tests {
-    /// The assistant's code has no way to reach the network: no HTTP client or socket anywhere,
-    /// and web addresses only in `browser.rs` (for your browser to open, 20b).
+    /// The assistant's code has no way to reach the network but `web.rs` (20d): no HTTP client,
+    /// socket or curl anywhere else, and web addresses only in `browser.rs` (for your browser to
+    /// open, 20b). `web.rs` itself goes only to its `HOSTS` (its test `only_where_it_may_go`).
     #[test]
     fn no_network() {
-        let sources = [("mod.rs", include_str!("mod.rs")), ("activity.rs", include_str!("activity.rs")), ("tools.rs", include_str!("tools.rs")), ("policy.rs", include_str!("policy.rs")), ("hud.rs", include_str!("hud.rs")), ("speech.rs", include_str!("speech.rs")), ("routines.rs", include_str!("routines.rs")), ("model.rs", include_str!("model.rs")), ("diagnose.rs", include_str!("diagnose.rs")), ("learn.rs", include_str!("learn.rs")), ("refer.rs", include_str!("refer.rs")), ("rules.rs", include_str!("rules.rs")), ("run.rs", include_str!("run.rs")), ("voice.rs", include_str!("voice.rs")), ("browser.rs", include_str!("browser.rs"))];
+        let sources = [("mod.rs", include_str!("mod.rs")), ("activity.rs", include_str!("activity.rs")), ("tools.rs", include_str!("tools.rs")), ("policy.rs", include_str!("policy.rs")), ("hud.rs", include_str!("hud.rs")), ("speech.rs", include_str!("speech.rs")), ("routines.rs", include_str!("routines.rs")), ("model.rs", include_str!("model.rs")), ("diagnose.rs", include_str!("diagnose.rs")), ("learn.rs", include_str!("learn.rs")), ("refer.rs", include_str!("refer.rs")), ("rules.rs", include_str!("rules.rs")), ("run.rs", include_str!("run.rs")), ("voice.rs", include_str!("voice.rs")), ("browser.rs", include_str!("browser.rs")), ("web.rs", include_str!("web.rs"))];
         // Spelled in pieces so this list doesn't match itself.
         let clients = [["req", "west"], ["ure", "q::"], ["hy", "per"], ["Tcp", "Stream"], ["Udp", "Socket"], ["Unix", "Stream"], ["\"cu", "rl\""], ["\"wg", "et\""]];
         let addresses = [["http", "://"], ["https", "://"]];
         for (file, text) in sources {
+            // web.rs runs curl; it may name it and its hosts, and nothing else.
+            let clients: &[[&str; 2]] = if file == "web.rs" { &clients[..6] } else { &clients };
             for b in clients {
                 let word = b.concat();
                 assert!(!text.contains(&word), "{file} mentions {word}: the assistant opens no connection");
             }
             for b in addresses {
                 let word = b.concat();
-                assert!(file == "browser.rs" || !text.contains(&word), "{file} mentions {word}: web addresses only in browser.rs");
+                assert!(file == "browser.rs" || file == "web.rs" || !text.contains(&word), "{file} mentions {word}: web addresses only in browser.rs and web.rs");
             }
         }
     }

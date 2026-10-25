@@ -84,6 +84,10 @@ pub const TOOLS: &[Tool] = &[
     Tool { name: "disk_space", about: "How much space is left on the disks.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "sound_check", about: "Why the sound may be bad or cutting out: muted, the output, a Bluetooth headset in phone-quality mode.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "now_playing", about: "What the media players are playing.", tier: Tier::Read, undo: false, params: &[] },
+    // 20d: online (web.rs), as Settings → Assistant allows.
+    Tool { name: "weather", about: "The weather now, tomorrow or this week, in your town or a place.", tier: Tier::Read, undo: false, params: &[opt("place", Arg::Text { max: 80 }, "a town; yours if left out"), opt("day", Arg::OneOf(&["today", "tomorrow", "week"]), "today if left out")] },
+    Tool { name: "news", about: "The latest news headlines, or the news on a topic.", tier: Tier::Read, undo: false, params: &[opt("topic", Arg::Text { max: 80 }, "e.g. cricket; the top stories if left out")] },
+    Tool { name: "look_up", about: "Look something up online: a fact about a person, place or thing, or search results.", tier: Tier::Read, undo: false, params: &[p("query", Arg::Text { max: 200 }, "what to look up"), opt("want", Arg::OneOf(&["answer", "results"]), "answer if left out")] },
     // ---- Tier 1: reversible ----
     Tool { name: "set_volume", about: "Set the output volume.", tier: Tier::Reversible, undo: true, params: &[p("percent", Arg::Int { min: 0, max: 100 }, "0 to 100")] },
     Tool { name: "change_volume", about: "Turn the output volume up or down by some points.", tier: Tier::Reversible, undo: true, params: &[p("by", Arg::Int { min: -100, max: 100 }, "points, negative is quieter")] },
@@ -115,6 +119,7 @@ pub const TOOLS: &[Tool] = &[
     Tool { name: "move_to_desktop", about: "Move a window to another desktop (1 to 9), staying here.", tier: Tier::Reversible, undo: true, params: &[p("window", WINDOW, "its title or app"), p("number", Arg::Int { min: 1, max: 9 }, "")] },
     Tool { name: "show_desktop", about: "Move every window out of the way to show the desktop, or bring them back.", tier: Tier::Reversible, undo: true, params: &[] },
     Tool { name: "dock", about: "Change the dock: where it is, when it hides, how big it is.", tier: Tier::Reversible, undo: true, params: &[opt("position", Arg::OneOf(&["left", "bottom", "right"]), ""), opt("hide", Arg::OneOf(&["never", "smart", "always"]), "smart: when a window is maximized"), opt("size", Arg::OneOf(&["small", "medium", "large"]), "")] },
+    Tool { name: "set_place", about: "Remember the user's town, for the weather.", tier: Tier::Reversible, undo: true, params: &[p("place", Arg::Text { max: 80 }, "a town")] },
     Tool { name: "desktop_setting", about: "Turn a desktop setting on or off.", tier: Tier::Reversible, undo: true, params: &[p("setting", Arg::OneOf(DESKTOP_SETTINGS), ""), p("on", ON, "")] },
     // ---- Tier 2: consequential, asks every time ----
     Tool { name: "close_window", about: "Close a window. Its app may lose unsaved work.", tier: Tier::Consequential, undo: false, params: &[p("window", WINDOW, "its title or app")] },

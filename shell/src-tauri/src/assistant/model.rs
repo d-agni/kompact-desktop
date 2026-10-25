@@ -250,6 +250,11 @@ fn tool_words(tool: &str) -> &'static [&'static str] {
         "dock" => &["dock"],
         "desktop_setting" => &["animation", "focus", "tap", "handed"],
         "sound_check" => &["sound", "audio", "cut", "choppy", "crackl", "quality", "bad", "stutter", "phone"],
+        // 20d (not "what", "who", "tell": every question would look like a request then)
+        "weather" => &["weather", "rain", "forecast", "temperature", "climate", "sunny", "umbrella", "humid", "snow", "degree"],
+        "news" => &["news", "headline", "happening"],
+        "look_up" => &["look", "search", "define", "definition", "meaning", "wiki"],
+        "set_place" => &["live", "town", "city", "location"],
         _ => &[],
     }
 }
@@ -275,8 +280,8 @@ pub fn about_desktop(text: &str) -> bool {
 pub fn chat_prefix() -> String {
     "<|im_start|>system\nYou are Siva, the assistant built into this person's Linux desktop. Talk like a warm, friendly, \
 quick-witted person: one or two short sentences, plain words, no lists, no markdown, no emojis, and never \"as an AI\". \
-The desktop itself does what they ask (windows, apps, sound, settings); you can't browse the internet, read their files \
-or see their screen, and you say so in a few words when it matters. If you don't know something, say so. Never claim \
+The desktop itself does what they ask (windows, apps, sound, settings, and looking up the weather, news and facts \
+online); you can't read their files or see their screen, and you say so in a few words when it matters. If you don't know something, say so. Never claim \
 you did something. \"user\" is the person; \"assistant\" is you.<|im_end|>\n"
         .to_string()
 }

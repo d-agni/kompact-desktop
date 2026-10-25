@@ -17,6 +17,7 @@ const hud = $("hud");
 const statusEl = $("status");
 const heardEl = $("heard");
 const replyEl = $("reply");
+const linksEl = $("links");
 const buttonsEl = $("buttons");
 const micEl = $("mic");
 const planEl = $("plan");
@@ -31,7 +32,8 @@ const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext("2d"));
 
 /** @typedef {"hidden" | "waking" | "listening" | "thinking" | "reply" | "typing"} State */
 /** @typedef {{text: string, state: string}} PlanItem */
-/** @typedef {{text: string, mood: string, undo: number | null, confirm: {id: number, text: string, button: string} | null, plan?: PlanItem[] | null, choices?: {label: string, request: string}[]}} Reply */
+/** @typedef {{title: string, detail: string, url: string | null}} Link */
+/** @typedef {{text: string, mood: string, undo: number | null, confirm: {id: number, text: string, button: string, plain?: boolean} | null, plan?: PlanItem[] | null, choices?: {label: string, request: string}[], links?: Link[]}} Reply */
 
 /** @type {State} */
 let state = "hidden";
@@ -220,6 +222,7 @@ function reset() {
   renderPlan(null);
   heardEl.textContent = "";
   replyEl.textContent = "";
+  linksEl.replaceChildren();
   buttonsEl.replaceChildren();
   typeForm.hidden = true;
   delete document.body.dataset.mood;
@@ -294,6 +297,7 @@ function showReply(r) {
   replyEl.textContent = r.text;
   if (r.plan) renderPlan(r.plan);
   if (!r.confirm) foldPlan();
+  renderLinks(r.links || []);
   buttonsEl.replaceChildren();
   card = 0;
   const c = r.confirm;
@@ -302,7 +306,7 @@ function showReply(r) {
     setMini(false);
     buttonsEl.append(
       button("Cancel", "", () => answer(c.id, false)),
-      button(c.button, "danger", () => answer(c.id, true)),
+      button(c.button, c.plain ? "primary" : "danger", () => answer(c.id, true)),
     );
     setState("reply", STATUS.concerned);
     // Left alone, it's a no.
@@ -334,7 +338,33 @@ function showReply(r) {
     );
   }
   setState("reply", STATUS[r.mood] ?? "");
-  hideIn((r.text.length > 90 ? 9000 : 6000) + (undoId != null ? 3000 : 0));
+  // 20d: a list to read (headlines, results) stays longer.
+  hideIn((r.text.length > 90 ? 9000 : 6000) + (undoId != null ? 3000 : 0) + (linksEl.childElementCount ? 14000 : 0));
+}
+
+/** 20d: what a look-up found, under the reply; a line with an address opens it in the browser.
+ * @param {Link[]} links */
+function renderLinks(links) {
+  linksEl.replaceChildren(
+    ...links.map((l) => {
+      const li = document.createElement("li");
+      const el = l.url ? Object.assign(document.createElement("button"), { type: "button", title: "Open in the browser" }) : document.createElement("div");
+      el.className = "link-row";
+      el.append(Object.assign(document.createElement("span"), { className: "l-title", textContent: l.title }));
+      if (l.detail) el.append(Object.assign(document.createElement("span"), { className: "l-detail", textContent: l.detail }));
+      if (l.url) {
+        const url = l.url;
+        el.addEventListener("click", () => {
+          clearHide();
+          invoke("assistant_open_link", { url });
+          hideIn(4000);
+        });
+      }
+      li.append(el);
+      return li;
+    }),
+  );
+  updateInput();
 }
 
 /** The card's answer, as the same task going on. @param {number} cardId @param {boolean} yes */

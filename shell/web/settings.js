@@ -672,6 +672,8 @@ let voice = null;
 let speech = null;
 /** 19f @type {{ready: boolean, model: string, missing: string | null} | null} */
 let model = null;
+/** 20d @type {{mode: "always" | "ask" | "off", place: string, zone_place: string, curl: boolean} | null} */
+let internet = null;
 
 /** @param {string} cmd @param {Record<string, unknown>} [args] */
 function asCall(cmd, args) {
@@ -687,8 +689,9 @@ function asCall(cmd, args) {
 async function loadAssistant() {
   void loadRoutines();
   void loadLearnt();
-  const [list, v, sp, md] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state"), asCall("model_state")]);
+  const [list, v, sp, md, net] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state"), asCall("model_state"), asCall("internet_state")]);
   model = md;
+  internet = net;
   activity = list || [];
   voice = v;
   speech = sp;
@@ -740,7 +743,29 @@ function renderAssistant() {
     : model.ready
       ? `Ready (${model.model}): “I can't hear anything”, “get the browser out of the way”. A second or two; a guess of several steps asks first.`
       : `Not set up yet. ${model.missing}`;
+  renderInternet();
   renderActivity();
+}
+
+/** 20d */
+function renderInternet() {
+  if (!internet) return;
+  /** @type {HTMLSelectElement} */ ($("as-net")).value = internet.mode;
+  const town = /** @type {HTMLInputElement} */ ($("as-town"));
+  if (document.activeElement !== town) town.value = internet.place;
+  town.placeholder = internet.zone_place || "e.g. Chennai";
+  town.disabled = internet.mode === "off";
+  $("as-town-hint").textContent = internet.place
+    ? "For “what's the weather” and local news. You can also say “I live in Chennai”."
+    : `Not set: ${internet.zone_place ? `${internet.zone_place}, from your time zone, is used` : "say the town when you ask"}. Type yours, or say “I live in Chennai”.`;
+  if (!internet.curl) $("as-net-hint").textContent = "Needs curl, which isn't installed: run “sudo apt install curl” in a terminal.";
+}
+
+/** @param {string} mode @param {string} place */
+async function setInternet(mode, place) {
+  const st = await asCall("set_internet", { mode, place });
+  if (st) internet = st;
+  renderInternet();
 }
 
 function renderActivity() {
@@ -951,6 +976,8 @@ $("as-rt-save").addEventListener("click", async () => {
   }
 });
 
+$("as-net").addEventListener("change", (e) => void setInternet(/** @type {HTMLSelectElement} */ (e.target).value, internet?.place || ""));
+$("as-town").addEventListener("change", (e) => void setInternet(internet?.mode || "always", /** @type {HTMLInputElement} */ (e.target).value));
 $("as-speak").addEventListener("change", async (e) => {
   const st = await asCall("set_speak", { speak: /** @type {HTMLSelectElement} */ (e.target).value });
   if (st) speech = st;

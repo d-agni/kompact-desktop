@@ -79,7 +79,8 @@ pkg_of() { # a file path -> its Debian package (not -dev)
     done
     pkg_of "$(ls /usr/lib/x86_64-linux-gnu/dri/*_dri.so /usr/lib/x86_64-linux-gnu/dri/libdril_dri.so 2>/dev/null | head -1)"
     # Programs kompact and the shell run.
-    for c in foot dbus-update-activation-environment gsettings xdg-open fc-match wpctl pw-dump; do
+    # 20d: curl takes Siva's look-ups online (weather, news, search).
+    for c in foot dbus-update-activation-environment gsettings xdg-open fc-match wpctl pw-dump curl; do
         pkg_of "$(command -v "$c")"
     done
     echo xdg-desktop-portal

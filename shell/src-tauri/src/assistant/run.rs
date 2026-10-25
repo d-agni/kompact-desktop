@@ -124,6 +124,8 @@ pub struct Reply {
     /// 20a: a question's answers as buttons, each a request ("What should I do with Firefox?"
     /// Open · Bring Up · Maximize · Close).
     pub choices: Vec<Choice>,
+    /// 20d: what a look-up found, listed under the reply (headlines, results, the week's days).
+    pub links: Vec<super::web::Link>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,14 +238,17 @@ pub struct Card {
     pub id: u64,
     pub text: String,
     pub button: String,
+    /// 20d: an everyday question ("May I go online…?"): its button isn't red.
+    pub plain: bool,
 }
 
 fn reply(text: impl Into<String>, mood: &'static str) -> Reply {
-    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None, choices: Vec::new() }
+    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None, choices: Vec::new(), links: Vec::new() }
 }
 
 const HELP: &str = "Try: “volume 30”, “dark mode”, “open Firefox”, “put Firefox and Terminal side by side”, \
-“next song”, “do not disturb”, “go to desktop 2”, “take a screenshot”, “lock the screen”, “why is my computer slow?”, “why is the sound bad?”, or a routine: “set up for coding”.";
+“next song”, “do not disturb”, “go to desktop 2”, “why is my computer slow?”, “what's the weather tomorrow?”, “news about cricket”, \
+“who is A. R. Rahman?”, “search for rust traits”, or a routine: “set up for coding”.";
 
 // ---- undo ----
 
@@ -263,6 +268,8 @@ enum Undo {
     Bluetooth(bool),
     /// 20b: a window back to its desktop (1-based).
     SendBack { id: u64, desktop: u64 },
+    /// 20d: the town Siva knew before ("" for the time zone's).
+    Town(String),
     ShowDesktop,
     Dock(crate::dock::DockPrefs),
     /// A kompact setting's old value ("animations", "on").
@@ -347,6 +354,13 @@ struct Ctx {
     /// The windows there were before this request opened an app: "open files then put it on the
     /// left" means the *new* Files window, which takes a moment to appear.
     before_open: Option<Vec<u64>>,
+    /// 20d: what look-ups found, for the reply's list.
+    links: Vec<super::web::Link>,
+}
+
+/// 20d: a look-up (`web`, blocking) off the main thread.
+async fn online<F: FnOnce() -> Result<super::web::Found, String> + Send + 'static>(f: F) -> Result<super::web::Found, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
 }
 
 /// How long a step waits for the window of an app this request opened.
@@ -751,6 +765,32 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             app.state::<crate::overlay::Overlay>().open_path(app, std::path::PathBuf::from(&url));
             done(format!("Opening {url}."), None)
         }
+        // 20d: online, as Settings → Assistant allows (checked in `run_steps`).
+        "weather" => {
+            let place = a.get("place").and_then(Value::as_str).map(str::to_string);
+            let day = a.get("day").and_then(Value::as_str).unwrap_or("today").to_string();
+            let f = online(move || super::web::weather(place.as_deref(), &day)).await?;
+            ctx.links.extend(f.links);
+            done(f.text, None)
+        }
+        "news" => {
+            let topic = a.get("topic").and_then(Value::as_str).map(|t| if ["local", "my town", "my city", "my area"].contains(&t) { super::web::home_place() } else { t.to_string() });
+            let f = online(move || super::web::news(topic.as_deref())).await?;
+            ctx.links.extend(f.links);
+            done(f.text, None)
+        }
+        "look_up" => {
+            let (query, want) = (str_arg("query"), a.get("want").and_then(Value::as_str).unwrap_or("answer").to_string());
+            let f = online(move || super::web::look_up(&query, &want)).await?;
+            ctx.links.extend(f.links);
+            done(f.text, None)
+        }
+        "set_place" => {
+            let mut p = super::web::load_prefs();
+            let old = std::mem::replace(&mut p.place, super::web::clean_place(&str_arg("place")));
+            super::web::save_prefs(&p)?;
+            done(format!("Got it: you're in {}. I'll use it for the weather.", p.place), Some(Undo::Town(old)))
+        }
         "search_web" => {
             let site = a.get("site").and_then(Value::as_str).unwrap_or("web");
             let url = super::browser::search_url(site, &str_arg("query"));
@@ -875,6 +915,7 @@ async fn undo_one(app: &AppHandle, u: &Undo) -> Result<(), String> {
         Undo::ShowDesktop => send(app, "show-desktop", None),
         Undo::Dock(old) => crate::dock::set_dock_prefs(app.clone(), app.state::<Compositor>(), *old),
         Undo::Setting(key, value) => crate::compositor::kompact_set(app.state::<Compositor>(), key.clone(), value.clone()),
+        Undo::Town(old) => super::web::save_prefs(&super::web::Prefs { place: old.clone(), ..super::web::load_prefs() }),
     }
 }
 
@@ -902,8 +943,33 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, said: Vec<String>
     plan.into_reply(r)
 }
 
-async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<String>, mut undo: Vec<Undo>, mut confirmed: bool, plan: &mut Plan<'_>) -> Reply {
+async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, said: Vec<String>, undo: Vec<Undo>, confirmed: bool, plan: &mut Plan<'_>) -> Reply {
     let mut ctx = Ctx::default();
+    let r = run_steps_in(app, steps, at, said, undo, confirmed, plan, &mut ctx).await;
+    Reply { links: std::mem::take(&mut ctx.links), ..r }
+}
+
+/// A card for step `i`, the request waiting with it (answered by `assistant_answer`).
+#[allow(clippy::too_many_arguments)]
+fn wait_on_card(app: &AppHandle, steps: &[Step], i: usize, said: Vec<String>, undo: Vec<Undo>, text: String, button: String, plain: bool, plan: &mut Plan<'_>) -> Reply {
+    let state = app.state::<Assistant>();
+    let id = state.id();
+    info!("assistant: asks first: {} ({id})", steps[i].tool);
+    activity::record(app, Kind::AsksFirst, steps[i].tool, &text);
+    plan.set(i, "asks");
+    let prefix = said.join(" ");
+    let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
+    let card = Card { id, text: text.clone(), button, plain };
+    state.with(|inner| {
+        inner.waiting.push(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() });
+        let extra = inner.waiting.len().saturating_sub(6);
+        inner.waiting.drain(..extra);
+    });
+    Reply { confirm: Some(card), ..reply(text, "concerned") }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_steps_in(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<String>, mut undo: Vec<Undo>, mut confirmed: bool, plan: &mut Plan<'_>, ctx: &mut Ctx) -> Reply {
     let read_only = steps.iter().all(|s| super::tools::find(s.tool).is_some_and(|t| t.tier == super::tools::Tier::Read));
     for i in at..steps.len() {
         if i > at && stop_asked() {
@@ -914,6 +980,24 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
         }
         let s = &steps[i];
         plan.set(i, "now");
+        // 20d: going online, as Settings → Assistant allows (a click on Go Online is a yes).
+        if super::web::online(s.tool) && !confirmed {
+            match super::web::load_prefs().mode {
+                super::web::Mode::Off => {
+                    info!("assistant: {} not run: the internet is off for Siva", s.tool);
+                    plan.set(i, "failed");
+                    plan.rest(i + 1, "stopped");
+                    said.push("I'm not allowed online. Turn the internet on for me in Settings → Assistant.".into());
+                    return Reply { mood: "sorry", ..finish(app, said, undo, true) };
+                }
+                super::web::Mode::Ask => {
+                    let what = rules::describe(s);
+                    let what = what.chars().next().map(|f| f.to_lowercase().chain(what.chars().skip(1)).collect::<String>()).unwrap_or_default();
+                    return wait_on_card(app, steps, i, said, undo, format!("May I go online to {what}?"), "Go Online".into(), true, plan);
+                }
+                super::web::Mode::Always => {}
+            }
+        }
         let proposal = Proposal { tool: s.tool.to_string(), args: s.args.clone(), from_untrusted: false };
         match policy::decide(&proposal, i) {
             Decision::Refuse(r) => {
@@ -926,7 +1010,7 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
             }
             Decision::Confirm { .. } if !confirmed => {
                 let window = match s.args.get("window").and_then(Value::as_str) {
-                    Some(q) => find_windows(app, q, &ctx).await.ok().map(|ws| match ws.as_slice() {
+                    Some(q) => find_windows(app, q, ctx).await.ok().map(|ws| match ws.as_slice() {
                         [one] => label(one),
                         many => format!("{} windows: {}", many.len(), many.iter().map(label).collect::<Vec<_>>().join(", ")),
                     }),
@@ -939,24 +1023,11 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
                     return Reply { mood: "sorry", ..finish(app, said, undo, true) };
                 }
                 let (text, button) = confirm_text(s.tool, &s.args, window.as_deref());
-                let state = app.state::<Assistant>();
-                let id = state.id();
-                info!("assistant: asks first: {} ({id})", s.tool);
-                activity::record(app, Kind::AsksFirst, s.tool, &text);
-                plan.set(i, "asks");
-                let prefix = said.join(" ");
-                let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
-                let card = Card { id, text: text.clone(), button };
-                state.with(|inner| {
-                    inner.waiting.push(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() });
-                    let extra = inner.waiting.len().saturating_sub(6);
-                    inner.waiting.drain(..extra);
-                });
-                return Reply { text, mood: "concerned", undo: None, confirm: Some(card), plan: None, choices: Vec::new() };
+                return wait_on_card(app, steps, i, said, undo, text, button, false, plan);
             }
             Decision::Confirm { .. } | Decision::Run { .. } => {
                 confirmed = false;
-                match run_step(app, s, &mut ctx).await {
+                match run_step(app, s, ctx).await {
                     Ok(d) => {
                         info!("assistant: ran {} {}", s.tool, s.args);
                         // 19k: what "it" means next time.
@@ -984,6 +1055,15 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
         }
     }
     finish(app, said, undo, read_only)
+}
+
+/// 20d: a link under a reply (a headline, a result), in your browser.
+#[tauri::command]
+pub fn assistant_open_link(app: AppHandle, url: String) -> Result<(), String> {
+    let url = super::browser::web_address(&url).ok_or("That isn't a web address.")?;
+    info!("assistant: opened a link from the HUD");
+    app.state::<crate::overlay::Overlay>().open_path(&app, std::path::PathBuf::from(url));
+    Ok(())
 }
 
 /// A typed request (the HUD's Type).
@@ -1179,6 +1259,8 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
             activity::record(app, Kind::Refused, "", &format!("Didn't understand “{part}”"));
             reply(format!("Sorry, I don't understand “{part}” yet. Ask me “help” for ideas."), "sorry")
         }
+        // 20d: a question of fact with the internet off: an answer in words, if the model's here.
+        Parsed::Steps(steps) if steps.iter().all(|s| s.tool == "look_up") && super::web::load_prefs().mode == super::web::Mode::Off && super::model::state().ready => talk(app, text).await,
         Parsed::Steps(mut steps) => {
             let last = app.state::<Assistant>().with(|i| i.last_window.clone());
             fill_in_it(&mut steps, last.as_deref());
@@ -1296,12 +1378,17 @@ pub async fn assistant_heard(app: AppHandle, text: String) -> Reply {
     let waiting = app.state::<Assistant>().with(|i| i.waiting.last().map(|w| (w.id, w.card.clone())));
     let spoken = rules::spoken_answer(&text);
     match (spoken, waiting) {
+        // 20d: "May I go online?" isn't drastic: a spoken yes is a yes.
+        (Some(policy::Spoken::Yes), Some((id, card))) if card.plain => {
+            info!("assistant: going online (said yes)");
+            answer(&app, id, true).await
+        }
         (Some(s), Some((id, card))) => match policy::confirmed(policy::Answer::Spoken(s)) {
             Some(confirm) => answer(&app, id, confirm).await,
             None => {
                 info!("assistant: a spoken yes can't confirm; the card stays");
                 let text = format!("I heard “{}”, but only a click on {} says yes to this.", text.trim(), card.button);
-                Reply { text: text.clone(), mood: "concerned", undo: None, confirm: Some(Card { text, ..card }), plan: None, choices: Vec::new() }
+                Reply { confirm: Some(Card { text: text.clone(), ..card }), ..reply(text, "concerned") }
             }
         },
         (Some(policy::Spoken::No), None) if matches!(rules::parse(&text), Parsed::Unknown(_)) => reply("Okay. There's nothing to cancel.", "idle"),

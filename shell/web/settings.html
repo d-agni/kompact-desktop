@@ -410,7 +410,7 @@
     <main class="content" id="pane-assistant" hidden>
       <header class="head" data-drag>
         <h1>Assistant</h1>
-        <p class="sub">Siva does what you ask: click its ring in the menu bar and speak, or type. It runs on this PC; nothing it hears or reads leaves this computer.</p>
+        <p class="sub">Siva does what you ask: click its ring in the menu bar and speak, or type. It runs on this PC: what it hears never leaves this computer, and it goes online only to look up what you ask.</p>
       </header>
       <section class="card">
         <div class="row"><span class="row-label" id="as-menubar-label">In the menu bar<span class="hint">The ring turns into a sound wave while it listens. Control Center has the same choice.</span></span><select id="as-menubar" class="select cc-select" data-item="assistant" aria-labelledby="as-menubar-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
@@ -448,11 +448,17 @@
         <div class="row"><span class="row-label">Built-in rules, at once<span class="hint">“volume 30”, “dark mode”, “open firefox”, “put firefox and files side by side”, routines.</span></span></div>
         <div class="row"><span class="row-label">A small AI model on this PC, for the rest<span class="hint" id="as-model">…</span></span></div>
       </section>
+      <!-- 20d -->
+      <h2 class="group-title">Internet</h2>
+      <section class="card">
+        <div class="row"><span class="row-label" id="as-net-label">Look things up online<span class="hint" id="as-net-hint">The weather, the news (by topic too), facts and search results, from free services: Open-Meteo, Google News, Wikipedia, DuckDuckGo. Only what you ask about is sent; never your voice, windows or files.</span></span><select id="as-net" class="select" aria-labelledby="as-net-label"><option value="always">Always</option><option value="ask">Ask Each Time</option><option value="off">Off</option></select></div>
+        <div class="row"><label class="row-label" for="as-town">Your town<span class="hint" id="as-town-hint">For “what's the weather” and local news. You can also say “I live in Chennai”.</span></label><input id="as-town" class="text-field" type="text" maxlength="80" autocomplete="off" spellcheck="false"></div>
+      </section>
       <h2 class="group-title">What it may do</h2>
       <section class="card">
         <div class="row"><span class="row-label">Volume, music, windows, desktops, Wi-Fi, Bluetooth, Do Not Disturb, dark mode, opening apps<span class="hint">Done at once, with Undo.</span></span></div>
         <div class="row"><span class="row-label">Closing windows, logging out, sleep, restart, power off<span class="hint">It asks first, every time, and only a click on its button says yes; saying "yes" doesn't.</span></span></div>
-        <div class="row"><span class="row-label">Anything else<span class="hint">It can't: no files, no passwords, no installing, no internet.</span></span></div>
+        <div class="row"><span class="row-label">Anything else<span class="hint">It can't: no files, no passwords, no installing. Online it only reads (see Internet).</span></span></div>
       </section>
       <!-- 19e -->
       <h2 class="group-title">Routines</h2>

@@ -340,26 +340,41 @@ fn folder_for(w: &[&str]) -> Option<&'static str> {
 }
 
 /// "search youtube for lofi music", "search for cats on youtube", "youtube search cats",
-/// "google how tall is everest", "look up rust traits", "find pizza near me on maps".
+/// "google how tall is everest", "find pizza near me on maps": in the browser. 20d: "search for
+/// rust traits", "look up the eiffel tower" (no site, not google, not "in the browser"): Siva
+/// looks it up online and lists what it found (`look_up`).
 fn search(c: &str) -> Option<Step> {
     const SITES: [(&str, &str); 8] = [("youtube", "youtube"), ("wikipedia", "wikipedia"), ("google maps", "maps"), ("maps", "maps"), ("images", "images"), ("news", "news"), ("github", "github"), ("google", "web")];
-    let (mut q, mut site) = if let Some(r) = c.strip_prefix("search for ").or(c.strip_prefix("search ")).or(c.strip_prefix("look up ")).or(c.strip_prefix("find ")) {
+    // Siva's own look-up unless a site or the browser is named: what it wants.
+    let mut online = Some("results");
+    let (mut q, mut site) = if let Some(r) = c.strip_prefix("search for ").or(c.strip_prefix("search ")).or(c.strip_prefix("find ")) {
+        (r.to_string(), "web")
+    } else if let Some(r) = c.strip_prefix("look up ") {
+        online = Some("answer");
         (r.to_string(), "web")
     } else if let Some(r) = c.strip_prefix("google ") {
+        online = None;
         (r.to_string(), "web")
     } else {
         // "youtube search cats", "play lofi on youtube" isn't one (media).
         let (name, site) = SITES.iter().find(|(name, _)| c.starts_with(&format!("{name} search ")))?;
+        online = None;
         (c[name.len() + " search ".len()..].to_string(), *site)
     };
     for (name, s) in SITES {
         // "youtube for cats" / "cats on youtube" / "on youtube for cats"
         if let Some(r) = q.strip_prefix(&format!("{name} for ")).or(q.strip_prefix(&format!("on {name} for "))) {
-            (q, site) = (r.to_string(), s);
+            (q, site, online) = (r.to_string(), s, None);
             break;
         }
         if let Some(r) = q.strip_suffix(&format!(" on {name}")).or(q.strip_suffix(&format!(" in {name}"))) {
-            (q, site) = (r.to_string(), s);
+            (q, site, online) = (r.to_string(), s, None);
+            break;
+        }
+    }
+    for tail in [" in the browser", " in my browser", " in browser", " in firefox", " in a browser"] {
+        if let Some(r) = q.strip_suffix(tail) {
+            (q, online) = (r.to_string(), None);
             break;
         }
     }
@@ -367,7 +382,118 @@ fn search(c: &str) -> Option<Step> {
     if q.is_empty() {
         return None;
     }
+    if let Some(want) = online {
+        return Some(step("look_up", json!({"query": q, "want": want})));
+    }
     Some(step("search_web", if site == "web" { json!({"query": q}) } else { json!({"query": q, "site": site}) }))
+}
+
+// ---- 20d: online ----
+
+/// Words that end a place or a topic ("in chennai tomorrow", "about cricket today").
+const TIME_WORDS: [&str; 16] = ["today", "tomorrow", "tomorrows", "this", "next", "week", "weekend", "now", "right", "like", "please", "outside", "currently", "tonight", "morning", "evening"];
+
+/// The words after the last of `marks` (" in ", " about "…), up to a time word; None if none.
+fn words_after(c: &str, marks: &[&str]) -> Option<String> {
+    let (i, m) = marks.iter().filter_map(|m| c.rfind(m).map(|i| (i, *m))).max_by_key(|(i, _)| *i)?;
+    let words: Vec<&str> = c[i + m.len()..].split_whitespace().take_while(|w| !TIME_WORDS.contains(w)).collect();
+    let words: Vec<&str> = words.into_iter().skip_while(|w| ["the", "a"].contains(w)).collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// "weather", "will it rain tomorrow", "weather in chennai this week", "chennai weather", "is
+/// it cold outside", "how hot is it in delhi".
+fn weather_clause(c: &str, w: &[&str]) -> Option<Step> {
+    const NOT_OUTSIDE: [&str; 9] = ["cpu", "computer", "processor", "laptop", "pc", "gpu", "room", "machine", "system"];
+    if ["open", "launch", "start", "run"].contains(w.first()?) || has(w, &NOT_OUTSIDE) {
+        return None;
+    }
+    let asks = has(w, &["will", "is", "going", "does", "whats", "what", "any", "chance", "how", "hows", "should", "do", "it"]);
+    let about = has(w, &["weather", "forecast", "climate", "umbrella", "humidity"])
+        || (has(w, &["rain", "raining", "rainy", "snow", "snowing", "sunny", "humid", "windy", "cloudy"]) && asks)
+        || (has(w, &["temperature", "degrees", "hot", "cold", "warm"]) && asks && (has(w, &["outside", "today", "tomorrow", "week", "in", "now", "weather", "it"])));
+    if !about {
+        return None;
+    }
+    let day = if has(w, &["tomorrow", "tomorrows"]) { "tomorrow" } else if has(w, &["week", "weekend", "days"]) { "week" } else { "today" };
+    const HERE: [&str; 6] = ["my", "here", "area", "town", "city", "place"];
+    let place = words_after(c, &[" in ", " at ", " for "]).filter(|p| !p.split_whitespace().any(|x| HERE.contains(&x)) && !["it", "rain"].contains(&p.as_str())).or_else(|| {
+        // "chennai weather", "london forecast tomorrow"
+        let at = w.iter().position(|x| ["weather", "forecast"].contains(x))?;
+        const FILLER: [&str; 20] = ["whats", "what", "is", "the", "how", "hows", "todays", "tomorrows", "current", "show", "me", "tell", "check", "get", "give", "s", "like", "local", "a", "of"];
+        let before: Vec<&str> = w[..at].iter().copied().filter(|x| !FILLER.contains(x) && !TIME_WORDS.contains(x) && !HERE.contains(x)).collect();
+        (1..=3).contains(&before.len()).then(|| before.join(" "))
+    });
+    let mut args = serde_json::Map::new();
+    if let Some(p) = place {
+        args.insert("place".into(), json!(p));
+    }
+    if day != "today" {
+        args.insert("day".into(), json!(day));
+    }
+    Some(step("weather", Value::Object(args)))
+}
+
+/// "news", "the headlines", "news about cricket", "tech news", "whats happening in tamil nadu",
+/// "latest on the election".
+fn news_clause(c: &str, w: &[&str]) -> Option<Step> {
+    let happening = ["whats happening in ", "what is happening in ", "whats going on in ", "latest on ", "the latest on ", "any news on "].iter().find_map(|p| c.strip_prefix(p));
+    if happening.is_none() && !has(w, &["news", "headlines", "headline"]) {
+        return None;
+    }
+    // "open google news" is the site; "search news for x" the browser.
+    let bare = ["news", "the news", "headlines", "the headlines", "the latest news", "todays news"];
+    let after_verb = c.split_once(' ').map_or("", |(_, r)| r);
+    if (["open", "launch", "start", "go"].contains(w.first()?) && !bare.contains(&after_verb)) || c.contains("search") {
+        return None;
+    }
+    let topic = match happening {
+        Some(t) => Some(t.trim_start_matches("the ").to_string()),
+        None => words_after(c, &[" about ", " on ", " regarding ", " for ", " from ", " in "]).or_else(|| {
+            let at = w.iter().position(|x| ["news", "headlines", "headline"].contains(x))?;
+            const FILLER: [&str; 33] = [
+                "whats", "what", "is", "are", "the", "show", "me", "tell", "read", "get", "give", "any", "some", "latest", "top", "todays", "today", "current", "breaking", "main", "big",
+                "recent", "new", "s", "please", "daily", "trending", "i", "want", "hear", "open", "see", "check",
+            ];
+            let before: Vec<&str> = w[..at].iter().copied().filter(|x| !FILLER.contains(x) && !TIME_WORDS.contains(x)).collect();
+            (1..=3).contains(&before.len()).then(|| before.join(" "))
+        }),
+    };
+    Some(step("news", topic.map(|t| json!({"topic": t})).unwrap_or(json!({}))))
+}
+
+/// "who is a r rahman", "what is a black hole", "tell me about chennai", "define serendipity",
+/// "how tall is mount everest": facts, looked up (Wikipedia, else search results). Not about
+/// you, Siva or the desktop ("what is my volume" is answered by earlier rules, "whats up" is
+/// talk).
+fn look_up_clause(c: &str) -> Option<Step> {
+    const FACTS: [&str; 15] = ["who is ", "who was ", "who are ", "who were ", "what is a ", "what is an ", "whats a ", "whats an ", "what are ", "what was ", "tell me about ", "define ", "definition of ", "meaning of ", "what is "];
+    const QUESTIONS: [&str; 13] = ["how tall is ", "how old is ", "how far is ", "how big is ", "how many people ", "how long is ", "when was ", "when did ", "when is ", "why is ", "why do ", "how does ", "how to "];
+    const NOT: [&str; 18] = ["my", "your", "you", "this", "that", "it", "up", "wrong", "the matter", "going on", "new", "there", "here", "happening", "open", "running", "playing", "on"];
+    let (rest, want) = if let Some(r) = c.strip_prefix("whats ").filter(|r| !r.starts_with("a ") && !r.starts_with("an ")) {
+        (r, "answer")
+    } else if let Some(r) = FACTS.iter().find_map(|p| c.strip_prefix(p)) {
+        (r, "answer")
+    } else if QUESTIONS.iter().any(|p| c.starts_with(p)) {
+        (c, "results")
+    } else if let Some(r) = c.strip_prefix("what does ").and_then(|r| r.strip_suffix(" mean")) {
+        (r, "answer")
+    } else {
+        return None;
+    };
+    let first = rest.split_whitespace().next()?;
+    if NOT.contains(&first) || NOT.iter().any(|n| rest == *n || rest.ends_with(&format!(" {n}")) && n.len() > 3) {
+        return None;
+    }
+    let rest = if want == "answer" { rest.trim_start_matches("the ") } else { rest };
+    Some(step("look_up", json!({"query": rest.trim(), "want": want})))
+}
+
+/// "i live in chennai", "my town is madurai": remembered for the weather.
+fn place_clause(c: &str) -> Option<Step> {
+    let p = ["i live in ", "my town is ", "my city is ", "my location is ", "set my location to ", "set my town to ", "set my city to ", "remember i live in ", "i stay in "].iter().find_map(|p| c.strip_prefix(p))?;
+    let p = p.trim_end_matches(" now").trim();
+    (!p.is_empty() && p.split_whitespace().count() <= 4).then(|| step("set_place", json!({"place": p})))
 }
 
 /// One request, already split from the others.
@@ -378,6 +504,10 @@ fn clause(c: &str) -> Option<Vec<Step>> {
     // settings" isn't Bluetooth on, "move the dock to the left" isn't a window).
     if let Some(s) = desktop_clause(c, &w) {
         return Some(s);
+    }
+    // 20d: online (after the desktop's own words: "open the network settings" isn't news).
+    if let Some(s) = place_clause(c).or_else(|| weather_clause(c, &w)).or_else(|| news_clause(c, &w)) {
+        return Some(vec![s]);
     }
 
     // "firefox and terminal side by side" (kept whole by `split`)
@@ -575,6 +705,11 @@ fn clause(c: &str) -> Option<Vec<Step>> {
         return Some(vec![step("place_window", json!({"window": n, "where": "fill"}))]);
     }
 
+    // 20d: facts, after everything about the desktop ("what is my volume", "whats playing").
+    if let Some(s) = look_up_clause(c) {
+        return Some(vec![s]);
+    }
+
     // ---- apps ----
     if ["open", "launch", "start", "run"].contains(&first) {
         return name_after(&w, 1).map(|n| vec![step("open_app", json!({"app": n}))]);
@@ -609,7 +744,7 @@ fn small_talk(c: &str) -> Option<&'static str> {
     } else if is(&["thank you", "thanks", "thank you so much", "thanks a lot", "cheers", "thanks siva", "thank you siva", "nice", "great", "awesome", "perfect", "cool", "good job", "well done"]) {
         "Happy to help."
     } else if is(&["who are you", "whats your name", "what is your name", "what are you", "who made you"]) {
-        "I'm Siva, the assistant built into your desktop. I run right here on this PC, and nothing you say leaves it."
+        "I'm Siva, the assistant built into your desktop. I run right here on this PC: your voice never leaves it, and I go online only to look up what you ask."
     } else if is(&["good night", "goodnight", "night"]) {
         "Good night! Sleep well."
     } else if is(&["bye", "goodbye", "see you", "see you later", "thats all", "that is all", "nothing", "never mind"]) {
@@ -650,6 +785,19 @@ pub fn describe(s: &Step) -> String {
         "open_settings" => format!("Open {} settings", title(text("pane"))),
         "open_folder" => format!("Open {}", title(text("folder"))),
         "open_link" => format!("Open {}", text("url")),
+        // 20d
+        "weather" => {
+            let at = if text("place").is_empty() { String::new() } else { format!(" in {}", title(text("place"))) };
+            match text("day").as_str() {
+                "tomorrow" => format!("Check tomorrow's weather{at}"),
+                "week" => format!("Check this week's weather{at}"),
+                _ => format!("Check the weather{at}"),
+            }
+        }
+        "news" if text("topic").is_empty() => "Get the headlines".into(),
+        "news" => format!("Get the news on {}", text("topic")),
+        "look_up" => format!("Look up “{}”", text("query")),
+        "set_place" => format!("Remember your town: {}", title(text("place"))),
         "search_web" if text("site").is_empty() => format!("Search the web for {}", text("query")),
         "search_web" => format!("Search {} for {}", title(text("site")), text("query")),
         "move_to_desktop" => format!("Move {} to desktop {}", title(text("window")), int("number")),
@@ -1068,6 +1216,58 @@ mod tests {
     }
 
     #[test]
+    fn online() {
+        // 20d: the weather.
+        assert_eq!(one("what's the weather"), ("weather".into(), json!({})));
+        assert_eq!(one("weather in Chennai tomorrow"), ("weather".into(), json!({"place": "chennai", "day": "tomorrow"})));
+        assert_eq!(one("What's the weather like in New York this week?"), ("weather".into(), json!({"place": "new york", "day": "week"})));
+        assert_eq!(one("chennai weather"), ("weather".into(), json!({"place": "chennai"})));
+        assert_eq!(one("will it rain tomorrow"), ("weather".into(), json!({"day": "tomorrow"})));
+        assert_eq!(one("is it raining in London"), ("weather".into(), json!({"place": "london"})));
+        assert_eq!(one("is it cold outside"), ("weather".into(), json!({})));
+        assert_eq!(one("how hot is it in delhi"), ("weather".into(), json!({"place": "delhi"})));
+        assert_eq!(one("weather in my area"), ("weather".into(), json!({})));
+        assert_eq!(one("give me the climate report"), ("weather".into(), json!({})));
+        assert_eq!(one("weather forecast for the weekend"), ("weather".into(), json!({"day": "week"})));
+        assert_ne!(one("why is my computer so hot").0, "weather");
+        assert_eq!(one("google weather in chennai").0, "search_web", "google: the browser");
+        // The news.
+        assert_eq!(one("news"), ("news".into(), json!({})));
+        assert_eq!(one("what are today's headlines"), ("news".into(), json!({})));
+        assert_eq!(one("read me the latest news"), ("news".into(), json!({})));
+        assert_eq!(one("news about cricket"), ("news".into(), json!({"topic": "cricket"})));
+        assert_eq!(one("tech news"), ("news".into(), json!({"topic": "tech"})));
+        assert_eq!(one("show me the news on the stock market today"), ("news".into(), json!({"topic": "stock market"})));
+        assert_eq!(one("what's happening in Tamil Nadu"), ("news".into(), json!({"topic": "tamil nadu"})));
+        assert_eq!(one("latest on the election"), ("news".into(), json!({"topic": "election"})));
+        assert_eq!(one("open the news"), ("news".into(), json!({})));
+        assert_eq!(one("open google news").0, "open_app", "the site");
+        assert_eq!(one("search news for chennai").0, "search_web");
+        // Facts and searches.
+        assert_eq!(one("who is A R Rahman"), ("look_up".into(), json!({"query": "a r rahman", "want": "answer"})));
+        assert_eq!(one("what is a black hole"), ("look_up".into(), json!({"query": "black hole", "want": "answer"})));
+        assert_eq!(one("tell me about the Eiffel Tower"), ("look_up".into(), json!({"query": "eiffel tower", "want": "answer"})));
+        assert_eq!(one("what does serendipity mean"), ("look_up".into(), json!({"query": "serendipity", "want": "answer"})));
+        assert_eq!(one("how tall is mount everest"), ("look_up".into(), json!({"query": "how tall is mount everest", "want": "results"})));
+        assert_eq!(one("search for rust traits"), ("look_up".into(), json!({"query": "rust traits", "want": "results"})));
+        assert_eq!(one("look up the eiffel tower"), ("look_up".into(), json!({"query": "the eiffel tower", "want": "answer"})));
+        assert_eq!(one("search rust traits in the browser"), ("search_web".into(), json!({"query": "rust traits"})));
+        // Not facts: about the desktop, or talk.
+        assert_eq!(one("what's the time").0, "date_time");
+        assert_eq!(one("what is my volume").0, "sound_status");
+        assert_eq!(one("what's playing").0, "now_playing");
+        assert!(matches!(parse("what's up"), Parsed::Unknown(_) | Parsed::Talk(_)));
+        assert!(matches!(parse("what is wrong with you"), Parsed::Unknown(_)));
+        assert!(matches!(parse("what is this"), Parsed::Unknown(_)));
+        assert!(matches!(parse("who are you"), Parsed::Talk(_)));
+        // Your town.
+        assert_eq!(one("I live in Chennai"), ("set_place".into(), json!({"place": "chennai"})));
+        assert_eq!(one("my city is madurai"), ("set_place".into(), json!({"place": "madurai"})));
+        assert_eq!(describe(&step("weather", json!({"place": "chennai", "day": "tomorrow"}))), "Check tomorrow's weather in Chennai");
+        assert_eq!(describe(&step("news", json!({"topic": "cricket"}))), "Get the news on cricket");
+    }
+
+    #[test]
     fn misroutes_from_the_log() {
         // 2026-10-25: "Open about" looked for an app; "Minimize all applications" opened Launchpad;
         // "With the Bluetooth setting" turned Bluetooth on.
@@ -1151,7 +1351,8 @@ mod tests {
         assert_eq!(one("what time is it"), ("date_time".into(), json!({})));
         assert_eq!(one("what's the date today"), ("date_time".into(), json!({})));
         assert_eq!(one("what day is it"), ("date_time".into(), json!({})));
-        assert!(matches!(parse("tell me about the moon"), Parsed::Unknown(_)), "the model's to answer");
+        // 20d: looked up online now (Wikipedia), no longer the model's to make up.
+        assert_eq!(one("tell me about the moon"), ("look_up".into(), json!({"query": "moon", "want": "answer"})));
     }
 
     #[test]
