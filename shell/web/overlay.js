@@ -1317,7 +1317,11 @@ async function btToggle(d) {
   // @ts-ignore: injected by Tauri.
   await window.__TAURI__.core
     .invoke(d.connected ? "bluetooth_disconnect" : "bluetooth_connect", { path: d.path })
-    .catch((/** @type {unknown} */ e) => (btError = String(e)));
+    .catch((/** @type {unknown} */ e) => {
+      const text = String(e);
+      // fix/bluetooth: it forgot this computer: the fix is in Settings.
+      btError = text.startsWith("key-missing: ") ? `${text.slice(13)} (Bluetooth Settings → Pair Again)` : text;
+    });
   btBusy.delete(d.path);
   bt = (await invoke("bluetooth_state")) || bt;
   if (mode === "status" && stWhich === "bluetooth") btRender();

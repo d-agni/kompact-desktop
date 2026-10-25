@@ -1047,6 +1047,8 @@ for (const side of ["out", "in"]) {
 /** @type {BtState | null} */
 let bt = null;
 const btBusy = new Map(); // path → what's under way
+/** fix/bluetooth: devices that forgot this computer ("key missing"): they get Pair Again. */
+const btForgotUs = new Set();
 /** The pairing question the dialog shows (0: none). */
 let dialogFor = 0;
 const BT_GLYPH = /** @type {Record<string, string>} */ ({ headphones: "🎧", speaker: "🔊", keyboard: "⌨️", mouse: "🖱️", gamepad: "🎮", phone: "📱", computer: "💻" });
@@ -1055,8 +1057,12 @@ const BT_GLYPH = /** @type {Record<string, string>} */ ({ headphones: "🎧", sp
 function btCall(cmd, args) {
   if (!tauri) return Promise.resolve(null);
   return tauri.core.invoke(cmd, args).catch((/** @type {unknown} */ e) => {
+    const text = String(e);
+    // fix/bluetooth: "key-missing: …": that device gets a Pair Again button.
+    const path = /** @type {any} */ (args)?.path;
+    if (text.startsWith("key-missing: ") && path) btForgotUs.add(path);
     const el = $("bt-status");
-    el.textContent = String(e);
+    el.textContent = text.replace(/^key-missing: /, "");
     el.classList.add("error");
     return null;
   });
@@ -1114,6 +1120,10 @@ function btRow(d) {
   const hint = busy || (d.paired ? (d.connected ? `Connected${d.battery !== null ? ` · battery ${d.battery}%` : ""}` : "Not connected") : d.address);
   row.append(netLabel(d.name, hint));
   if (!busy) {
+    if (d.paired && btForgotUs.has(d.path) && !d.connected) {
+      // fix/bluetooth: it forgot this computer: forget it here too, find it, pair again.
+      row.append(btButton("Pair Again", () => btDo(d, "Put it in pairing mode now…", "bluetooth_repair"), true));
+    }
     if (d.paired) {
       row.append(btButton(d.connected ? "Disconnect" : "Connect", () => btDo(d, d.connected ? "Disconnecting…" : "Connecting…", d.connected ? "bluetooth_disconnect" : "bluetooth_connect")));
       row.append(
@@ -1139,7 +1149,11 @@ async function btDo(d, what, cmd) {
   el.classList.remove("error");
   renderBluetooth();
   console.log(`settings: ${cmd} ${d.name}`);
+  if (cmd !== "bluetooth_connect") btForgotUs.delete(d.path);
   await btCall(cmd, { path: d.path });
+  // btCall marks the status line when it failed (and keeps Pair Again for "key missing").
+  const failed = $("bt-status").classList.contains("error");
+  if (!failed && cmd === "bluetooth_repair") btForgotUs.delete(d.path);
   btBusy.delete(d.path);
   await loadBluetooth();
 }
