@@ -16,6 +16,7 @@ use tracing::info;
 use super::activity::{self, Kind};
 use super::policy::{self, Decision, Proposal};
 use super::rules::{self, Parsed, Step};
+use super::work;
 use crate::compositor::Compositor;
 
 // ---- matching names (pure) ----
@@ -204,7 +205,11 @@ static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 
 /// Whether this task was asked to stop (and the ask is used up).
 fn stop_asked() -> bool {
-    let t = current_task();
+    stop_asked_for(current_task())
+}
+
+/// `stop_asked` for task `t`, from any thread (21a: while a command runs).
+fn stop_asked_for(t: u64) -> bool {
     let mut list = STOPPED.lock().unwrap_or_else(|e| e.into_inner());
     let had = list.contains(&t);
     list.retain(|x| *x != t);
@@ -248,7 +253,8 @@ fn reply(text: impl Into<String>, mood: &'static str) -> Reply {
 
 const HELP: &str = "Try: “volume 30”, “dark mode”, “open Firefox”, “put Firefox and Terminal side by side”, \
 “next song”, “do not disturb”, “go to desktop 2”, “why is my computer slow?”, “what's the weather tomorrow?”, “news about cricket”, \
-“who is A. R. Rahman?”, “search for rust traits”, “write a joke in Text Editor”, “type Dear Sam”, “new tab”, “save it”, or a routine: “set up for coding”.";
+“who is A. R. Rahman?”, “search for rust traits”, “write a joke in Text Editor”, “type Dear Sam”, “new tab”, “save it”, “run python3 hello.py”, “create a file notes.txt with buy milk”, \
+“list the files in Documents”, or a routine: “set up for coding”.";
 
 // ---- undo ----
 
@@ -274,6 +280,8 @@ enum Undo {
     Dock(crate::dock::DockPrefs),
     /// A kompact setting's old value ("animations", "on").
     Setting(String, String),
+    /// 21a: a file Siva wrote, and what was in it (None: it was new, so Undo deletes it).
+    File { path: std::path::PathBuf, before: Option<Vec<u8>> },
 }
 
 /// A request waiting on a confirmation card: its steps, how far it got, what it said so far.
@@ -892,6 +900,96 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             }
             done(text, None)
         }
+        // 21a: files, directly; relative names in your home folder.
+        "read_file" => {
+            let home = work::home().ok_or("I can't find your home folder.")?;
+            let path = work::resolve(&str_arg("path"), &home)?;
+            let shown = work::shown(&path, &home);
+            if path.is_dir() {
+                return Err(format!("{shown} is a folder."));
+            }
+            let mut bytes = Vec::new();
+            use std::io::Read;
+            std::fs::File::open(&path)
+                .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { format!("There's no {shown}.") } else { format!("I can't read {shown}: {e}") })?
+                .take(work::READ_MAX as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("I can't read {shown}: {e}"))?;
+            let text = String::from_utf8(bytes).map_err(|_| format!("{shown} isn't a text file."))?;
+            if text.trim().is_empty() {
+                return done(format!("{shown} is empty."), None);
+            }
+            done(format!("{shown} ({} lines):\n{}", text.lines().count(), work::head(&text, work::SHOWN)), None)
+        }
+        "list_files" => {
+            let home = work::home().ok_or("I can't find your home folder.")?;
+            let path = match a.get("folder").and_then(Value::as_str) {
+                Some(f) => work::resolve(f, &home)?,
+                None => home.clone(),
+            };
+            let shown = work::shown(&path, &home);
+            let read = std::fs::read_dir(&path).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { format!("There's no folder {shown}.") } else { format!("I can't look in {shown}: {e}") })?;
+            let mut names: Vec<String> = read
+                .flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    (!name.starts_with('.')).then(|| if e.path().is_dir() { format!("{name}/") } else { name })
+                })
+                .collect();
+            names.sort_by_key(|n| n.to_lowercase());
+            const SHOW: usize = 40;
+            let more = names.len().saturating_sub(SHOW);
+            names.truncate(SHOW);
+            if names.is_empty() {
+                return done(format!("{shown} is empty."), None);
+            }
+            let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
+            done(format!("In {shown}: {}{tail}.", names.join(", ")), None)
+        }
+        "write_file" => {
+            let home = work::home().ok_or("I can't find your home folder.")?;
+            let path = work::resolve(&str_arg("path"), &home)?;
+            let shown = work::shown(&path, &home);
+            if path.is_dir() {
+                return Err(format!("{shown} is a folder."));
+            }
+            let before = if path.exists() { Some(std::fs::read(&path).map_err(|e| format!("I can't read {shown} to keep a copy: {e}"))?) } else { None };
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("I can't make the folder for {shown}: {e}"))?;
+            }
+            let content = str_arg("content");
+            std::fs::write(&path, &content).map_err(|e| format!("I can't write {shown}: {e}"))?;
+            info!("assistant: wrote {} ({} bytes{})", path.display(), content.len(), if before.is_some() { ", replaced" } else { "" });
+            let lines = content.lines().count();
+            let what = if before.is_some() { "Replaced" } else { "Wrote" };
+            done(format!("{what} {shown} ({lines} line{}).", if lines == 1 { "" } else { "s" }), Some(Undo::File { path, before }))
+        }
+        // 21a: in Siva's terminal, where you see it; its output comes back.
+        "run_command" => {
+            let home = work::home().ok_or("I can't find your home folder.")?;
+            let folder = match a.get("folder").and_then(Value::as_str) {
+                Some(f) => work::resolve(f, &home)?,
+                None => home.clone(),
+            };
+            if !folder.is_dir() {
+                return Err(format!("There's no folder {}.", work::shown(&folder, &home)));
+            }
+            let cmd = str_arg("command");
+            let task = current_task();
+            let c = cmd.clone();
+            let r = tauri::async_runtime::spawn_blocking(move || work::run(&c, &folder, || stop_asked_for(task))).await.map_err(|e| e.to_string())??;
+            let short: String = if cmd.chars().count() > 60 { format!("{}…", cmd.chars().take(60).collect::<String>()) } else { cmd.clone() };
+            let mut text = match r.exit {
+                Some(0) => format!("Ran “{short}”."),
+                Some(n) => format!("“{short}” ended with an error (exit {n})."),
+                None => return Err(format!("“{short}” is still running in Siva's terminal; I stopped waiting after {} s.", r.millis / 1000)),
+            };
+            if !r.output.is_empty() {
+                text.push('\n');
+                text.push_str(&work::tail(&r.output, work::OUTPUT_KEPT));
+            }
+            done(text, None)
+        }
         // 20e-3: Save As, the name in its window, Enter.
         "save_as" => {
             let w = typing_window(app, s, ctx).await?;
@@ -1050,6 +1148,8 @@ async fn undo_one(app: &AppHandle, u: &Undo) -> Result<(), String> {
         Undo::ShowDesktop => send(app, "show-desktop", None),
         Undo::Dock(old) => crate::dock::set_dock_prefs(app.clone(), app.state::<Compositor>(), *old),
         Undo::Setting(key, value) => crate::compositor::kompact_set(app.state::<Compositor>(), key.clone(), value.clone()),
+        Undo::File { path, before: Some(old) } => std::fs::write(path, old).map_err(|e| format!("can't put {} back: {e}", path.display())),
+        Undo::File { path, before: None } => std::fs::remove_file(path).map_err(|e| format!("can't remove {}: {e}", path.display())),
         Undo::Town(old) => super::web::save_prefs(&super::web::Prefs { place: old.clone(), ..super::web::load_prefs() }),
     }
 }
@@ -1082,6 +1182,33 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, said: Vec<String>
     let mut ctx = Ctx::default();
     let r = run_steps_in(app, steps, at, said, undo, confirmed, plan, &mut ctx).await;
     Reply { links: std::mem::take(&mut ctx.links), ..r }
+}
+
+/// 21a: the card for a work step that asks first (`work::command_asks`, `work::file_asks`), or
+/// None: it runs at once.
+fn work_asks(s: &Step) -> Option<(String, &'static str)> {
+    let text = |k: &str| s.args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    if s.tool == "run_command" {
+        let cmd = text("command");
+        return work::command_asks(&cmd).map(|why| (format!("Run “{cmd}”? {why}"), "Run"));
+    }
+    let key = match s.tool {
+        "read_file" | "write_file" => "path",
+        "list_files" => "folder",
+        _ => return None,
+    };
+    let home = work::home()?;
+    let raw = text(key);
+    let path = if raw.is_empty() { home.clone() } else { work::resolve(&raw, &home).ok()? };
+    let shown = work::shown(&path, &home);
+    let why = work::file_asks(&path, &home).or_else(|| {
+        (s.tool == "write_file" && std::fs::metadata(&path).is_ok_and(|m| m.len() > work::UNDO_MAX)).then_some("It's too big for me to keep a copy for Undo.")
+    })?;
+    Some(match s.tool {
+        "write_file" => (format!("Write {shown}? {why}"), "Write"),
+        "read_file" => (format!("Read {shown}? {why}"), "Read"),
+        _ => (format!("Look in {shown}? {why}"), "Look"),
+    })
 }
 
 /// A card for step `i`, the request waiting with it (answered by `assistant_answer`).
@@ -1164,6 +1291,12 @@ async fn run_steps_in(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<
                     said.push(e);
                     return Reply { mood: "sorry", ..finish(app, said, undo, true) };
                 }
+            }
+        }
+        // 21a: drastic commands, and files outside your home folder or hidden: ask first.
+        if !confirmed {
+            if let Some((text, button)) = work_asks(s) {
+                return wait_on_card(app, steps, i, said, undo, text, button.into(), false, plan);
             }
         }
         let proposal = Proposal { tool: s.tool.to_string(), args: s.args.clone(), from_untrusted: false };

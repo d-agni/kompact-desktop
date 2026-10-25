@@ -42,8 +42,7 @@ fn quoted(words: &[&str]) -> String {
 
 /// One line per tool: `place_window(window, where) - Put a window …; where: "left", "right", …`.
 fn tool_lines() -> String {
-    TOOLS
-        .iter()
+    tools::for_small_model()
         .map(|t| {
             let names: Vec<String> = t.params.iter().map(|p| if p.required { p.name.to_string() } else { format!("{}=…", p.name) }).collect();
             let mut line = format!("{}({}) - {}", t.name, names.join(", "), t.about.trim_end_matches('.'));
@@ -53,6 +52,7 @@ fn tool_lines() -> String {
                     Arg::Bool => "True or False".into(),
                     Arg::OneOf(words) => quoted(words),
                     Arg::Text { .. } => "a name".into(),
+                    Arg::Body { .. } => "text".into(),
                 };
                 line.push_str(&format!("; {}: {detail}", p.name));
                 if !p.about.is_empty() {
@@ -113,8 +113,8 @@ pub fn grammar() -> String {
     let rule = |name: &str| format!("t-{}", name.replace('_', "-"));
     let mut g = String::from("root ::= \"none\" | call");
     g.push_str(&"(\"; \" call)?".repeat(MAX_CALLS - 1));
-    g.push_str(&format!("\ncall ::= {}\n", TOOLS.iter().map(|t| rule(t.name)).collect::<Vec<_>>().join(" | ")));
-    for t in TOOLS {
+    g.push_str(&format!("\ncall ::= {}\n", tools::for_small_model().map(|t| rule(t.name)).collect::<Vec<_>>().join(" | ")));
+    for t in tools::for_small_model() {
         let mut body = format!("\"{}(\"", t.name);
         let mut first = true;
         for p in t.params {
@@ -122,7 +122,7 @@ pub fn grammar() -> String {
                 Arg::Int { .. } => "int".to_string(),
                 Arg::Bool => "bool".to_string(),
                 Arg::OneOf(words) => format!("({})", words.iter().map(|w| format!("\"\\\"{w}\\\"\"")).collect::<Vec<_>>().join(" | ")),
-                Arg::Text { .. } => "text".to_string(),
+                Arg::Text { .. } | Arg::Body { .. } => "text".to_string(),
             };
             let sep = if first { "" } else { ", " };
             let part = format!("\"{sep}{}=\" {value}", p.name);
@@ -181,6 +181,7 @@ fn value(arg: Arg, raw: &str) -> Option<Value> {
         }
         // `all_files` → "all files".
         Arg::Text { .. } => (!text.is_empty()).then(|| json!(text.replace('_', " "))),
+        Arg::Body { .. } => (!text.is_empty()).then(|| json!(text)),
     }
 }
 
@@ -188,7 +189,8 @@ fn value(arg: Arg, raw: &str) -> Option<Value> {
 fn call(c: &str) -> Result<Step, String> {
     let open = c.find('(').ok_or_else(|| format!("not a call: {c}"))?;
     let name = c[..open].trim();
-    let tool = tools::find(name).ok_or_else(|| format!("no tool {name:?}"))?;
+    // 21a: the work tools aren't the small model's (nor the cloud AI's one-shot answers').
+    let tool = tools::find(name).filter(|t| !tools::WORK.contains(&t.name)).ok_or_else(|| format!("no tool {name:?}"))?;
     let inner = c[open + 1..].trim_end().strip_suffix(')').ok_or_else(|| format!("not a call: {c}"))?;
     let mut args = Map::new();
     for (i, part) in split_outside_quotes(inner, ',').iter().enumerate() {
@@ -718,7 +720,7 @@ mod tests {
     #[test]
     fn what_it_is_told() {
         let p = prefix();
-        for t in TOOLS {
+        for t in tools::for_small_model() {
             assert!(p.contains(&format!("\n{}(", t.name)), "{} is listed", t.name);
         }
         assert!(p.contains("place_window(window, where) - Put a window on the left or right half, fill the screen, or restore its size; window: a name (its title or app); where: \"left\", \"right\", \"fill\", \"restore\""));
@@ -734,7 +736,7 @@ mod tests {
     fn the_grammar() {
         let g = grammar();
         assert!(g.starts_with("root ::= \"none\" | call(\"; \" call)?(\"; \" call)?(\"; \" call)?\n"), "{g}");
-        for t in TOOLS {
+        for t in tools::for_small_model() {
             assert!(g.contains(&format!("{} ::= \"{}(\"", format!("t-{}", t.name.replace('_', "-")), t.name)), "{}", t.name);
         }
         // Each detail by name, and only its own values.

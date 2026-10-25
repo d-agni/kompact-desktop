@@ -643,6 +643,93 @@ pub fn spoken_file_name(name: &str) -> String {
     words.join(" ")
 }
 
+/// 21a: programs that make "run …" a command, not an app ("run firefox" opens Firefox).
+const COMMANDS: &[&str] = &[
+    "python", "python3", "pip", "pip3", "ls", "cat", "echo", "pwd", "cd", "mkdir", "touch", "cp", "mv", "rm", "git", "cargo", "rustc", "make", "cmake", "gcc", "g++", "clang",
+    "node", "npm", "npx", "bash", "sh", "sudo", "apt", "df", "du", "free", "uname", "whoami", "date", "grep", "find", "head", "tail", "wc", "chmod", "ping", "ps",
+    "kill", "java", "javac", "go", "ruby", "perl", "php", "lua", "tar", "zip", "unzip", "sed", "awk", "sort", "which", "systemctl", "journalctl", "nproc", "lscpu", "ip", "docker",
+    "flatpak", "snap", "uptime", "hostname", "lsblk", "tree", "diff", "ln",
+];
+
+/// 21a: whether `text` reads as a command line: a known program first, a path to run, or
+/// shell punctuation.
+fn looks_like_command(text: &str) -> bool {
+    let first = text.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    COMMANDS.contains(&first.as_str()) || first.starts_with("./") || first.starts_with("~/") || first.starts_with('/') || ["&&", " | ", " > ", "$("].iter().any(|p| text.contains(p))
+}
+
+/// 21a: `text` past the first of `leads` it starts with (any case), or None.
+fn after_lead<'a>(text: &'a str, leads: &[&str]) -> Option<&'a str> {
+    leads.iter().find_map(|l| text.get(..l.len()).filter(|x| x.eq_ignore_ascii_case(l)).map(|_| text[l.len()..].trim()))
+}
+
+/// 21a: one of XDG's folders by its spoken name ("my documents folder" → "Documents"), or the
+/// words as a path; None for your home folder.
+fn folder_name(words: &str) -> Option<String> {
+    let w = words.trim().trim_end_matches(['.', '?']).trim();
+    let mut w = w.strip_prefix("my ").or(w.strip_prefix("the ")).unwrap_or(w).trim();
+    w = w.strip_suffix(" folder").or(w.strip_suffix(" directory")).unwrap_or(w).trim();
+    let lower = w.to_ascii_lowercase();
+    if lower.is_empty() || ["home", "home folder", "~"].contains(&lower.as_str()) {
+        return None;
+    }
+    let xdg = ["documents", "downloads", "desktop", "pictures", "music", "videos", "templates", "public"];
+    Some(if xdg.contains(&lower.as_str()) { format!("{}{}", lower[..1].to_uppercase(), &lower[1..]) } else { w.to_string() })
+}
+
+/// 21a: typed or said work on files and commands, as written (before `normalize`): "run
+/// python3 hello.py", "run the command ls -la in Documents"… "create a file hello.py with
+/// print('hi')", "read the file notes.txt", "list the files in my Documents folder".
+fn work(raw: &str) -> Option<Step> {
+    let mut t = raw.trim();
+    for lead in ["hey siva, ", "siva, ", "siva ", "please ", "can you ", "could you "] {
+        t = after_lead(t, &[lead]).unwrap_or(t);
+    }
+    let unquote = |x: &str| x.trim().trim_matches(['`', '"', '“', '”', '\'']).trim().to_string();
+    // Commands.
+    let said = after_lead(t, &["in the terminal run ", "in terminal run ", "run the command ", "run command ", "execute the command ", "execute command ", "type and run "]);
+    let plain = said.is_none();
+    if let Some(rest) = said.or_else(|| after_lead(t, &["run ", "execute "])) {
+        let mut cmd = rest.to_string();
+        for end in [" in the terminal", " in terminal", " in siva's terminal"] {
+            if cmd.to_ascii_lowercase().ends_with(end) {
+                cmd.truncate(cmd.len() - end.len());
+            }
+        }
+        // A sentence's full stop, not a command's ("run ls ." keeps it).
+        if cmd.ends_with('.') && !cmd.ends_with(" .") && !cmd.ends_with("..") {
+            cmd.pop();
+        }
+        // Said aloud: "python3 hello dot py".
+        let cmd = unquote(&cmd.replace(" dot ", "."));
+        if !cmd.is_empty() && (!plain || looks_like_command(&cmd)) {
+            return Some(step("run_command", json!({"command": cmd})));
+        }
+    }
+    // Reading a file.
+    if let Some(rest) = after_lead(t, &["read the file ", "read file ", "show me the file ", "show the file ", "show file ", "what's in the file ", "what is in the file ", "print the file "]) {
+        let name = spoken_file_name(&unquote(rest.trim_end_matches(['.', '?'])));
+        return (!name.is_empty()).then(|| step("read_file", json!({"path": name})));
+    }
+    // A folder's files.
+    if let Some(rest) = after_lead(t, &["list the files in ", "list files in ", "what files are in ", "what files are there in ", "show the files in ", "list the files", "list files", "what files are there", "what files do i have"]) {
+        let rest = rest.trim_end_matches(['.', '?']);
+        return Some(step("list_files", folder_name(rest).map(|f| json!({"folder": f})).unwrap_or(json!({}))));
+    }
+    // A new file with what's in it.
+    if let Some(rest) = after_lead(t, &["create a new file ", "create a file ", "create file ", "make a new file ", "make a file ", "write a file "]) {
+        let lower = rest.to_ascii_lowercase();
+        let (i, sep) = [" with the text ", " containing ", " that says ", " saying ", " with "].iter().find_map(|s| lower.find(s).map(|i| (i, *s)))?;
+        let name = spoken_file_name(&unquote(rest[..i].trim_start_matches("called ").trim_start_matches("named ")));
+        let content = unquote(&rest[i + sep.len()..]);
+        if name.is_empty() || content.is_empty() {
+            return None;
+        }
+        return Some(step("write_file", json!({"path": name, "content": format!("{content}\n")})));
+    }
+    None
+}
+
 /// 20e-3: "save it as notes.txt", "save the text editor with name, let.txt", "save this
 /// file named Shopping List": as written (the dots of the name kept), so before `normalize`.
 fn save_as(raw: &str) -> Option<Step> {
@@ -1050,6 +1137,11 @@ pub fn describe(s: &Step) -> String {
         "news" => format!("Get the news on {}", text("topic")),
         "look_up" => format!("Look up “{}”", text("query")),
         "set_place" => format!("Remember your town: {}", title(text("place"))),
+        "run_command" => format!("Run “{}”", text("command")),
+        "write_file" => format!("Write the file {}", text("path")),
+        "read_file" => format!("Read the file {}", text("path")),
+        "list_files" if text("folder").is_empty() => "List the files in your home folder".into(),
+        "list_files" => format!("List the files in {}", text("folder")),
         "type_text" | "write_text" | "press_keys" | "save_as" => {
             let what = match s.tool {
                 "type_text" => format!("Type “{}”", text("text")),
@@ -1200,6 +1292,10 @@ pub fn parse(text: &str) -> Parsed {
     let said = normalize(text);
     if let Some(answer) = small_talk(said.strip_suffix(" siva").unwrap_or(&said)) {
         return Parsed::Talk(answer);
+    }
+    // 21a: files and commands, as written.
+    if let Some(s) = work(text) {
+        return Parsed::Steps(vec![s]);
     }
     // 20e-3: "… and save it (as notes.txt)": saving is its own step, after the rest.
     let lower = text.to_ascii_lowercase();
@@ -1435,7 +1531,8 @@ mod tests {
         assert_eq!(parse("what can you do?"), Parsed::Help);
         assert_eq!(parse(""), Parsed::Unknown(String::new()));
         assert!(matches!(parse("delete all my files"), Parsed::Unknown(_)));
-        assert!(matches!(parse("run sudo rm -rf"), Parsed::Steps(_)), "becomes open_app \"sudo rm -rf\", which matches no app");
+        // 21a: a command now (and `work::command_asks` asks before it runs).
+        assert_eq!(one("run sudo rm -rf"), ("run_command".into(), json!({"command": "sudo rm -rf"})));
     }
 
     #[test]
@@ -1465,6 +1562,34 @@ mod tests {
             let line = describe(&step(t.name, json!({})));
             assert_ne!(line, t.name.replace('_', " "), "{}", t.name);
         }
+    }
+
+    #[test]
+    fn files_and_commands() {
+        let steps = |t: &str| match parse(t) {
+            Parsed::Steps(s) => s.iter().map(|s| format!("{} {}", s.tool, s.args)).collect::<Vec<_>>(),
+            other => panic!("{t:?}: {other:?}"),
+        };
+        assert_eq!(steps("run python3 hello.py"), [r#"run_command {"command":"python3 hello.py"}"#]);
+        assert_eq!(steps("Run python3 hello.py."), [r#"run_command {"command":"python3 hello.py"}"#], "whisper's full stop");
+        assert_eq!(steps("run python3 hello dot py"), [r#"run_command {"command":"python3 hello.py"}"#], "said aloud");
+        assert_eq!(steps("please run `ls -la` in the terminal"), [r#"run_command {"command":"ls -la"}"#]);
+        assert_eq!(steps("run the command cowsay hi"), [r#"run_command {"command":"cowsay hi"}"#], "said it's a command");
+        assert_eq!(steps("run ./build.sh"), [r#"run_command {"command":"./build.sh"}"#]);
+        assert_eq!(steps("execute git status"), [r#"run_command {"command":"git status"}"#]);
+        // Apps stay apps.
+        assert_eq!(steps("run firefox"), [r#"open_app {"app":"firefox"}"#]);
+        assert_eq!(steps("run files"), [r#"open_app {"app":"files"}"#]);
+        // Files.
+        assert_eq!(steps("create a file hello.py with print('Hello')"), [r#"write_file {"content":"print('Hello')\n","path":"hello.py"}"#]);
+        assert_eq!(steps("make a file called notes dot txt saying buy milk"), [r#"write_file {"content":"buy milk\n","path":"notes.txt"}"#]);
+        assert!(matches!(parse("create a file"), Parsed::Unknown(_) | Parsed::Steps(_)), "no name or contents: not a file");
+        assert_eq!(steps("read the file notes.txt"), [r#"read_file {"path":"notes.txt"}"#]);
+        assert_eq!(steps("show me the file hello dot py"), [r#"read_file {"path":"hello.py"}"#]);
+        assert_eq!(steps("list the files in my documents folder"), [r#"list_files {"folder":"Documents"}"#]);
+        assert_eq!(steps("list files"), [r#"list_files {}"#]);
+        assert_eq!(steps("what files are in ~/code?"), [r#"list_files {"folder":"~/code"}"#]);
+        assert_eq!(steps("list the files in my home folder"), [r#"list_files {}"#]);
     }
 
     #[test]

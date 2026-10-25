@@ -1,7 +1,8 @@
 //! 19a: what Siva can do: every tool the assistant may propose, with its arguments, how safe it
 //! is (`Tier`) and whether it can be undone. Only what is listed here exists for the assistant;
-//! Tier 3 (passwords, `sudo`, shell commands, files, the screen's contents, display modes) is
-//! left out on purpose, so no proposal can reach it.
+//! Tier 3 (passwords, the screen's contents, display modes, installing) is left out on purpose,
+//! so no proposal can reach it. 21a (decided 2026-10-25): files and commands are in (`WORK`),
+//! with their own asking first in `work.rs` (sudo, deleting, outside your home folder…).
 //!
 //! Pure: the tools are data; running them (through the shell's existing commands) comes with the
 //! assistant's page (19c). `schema` prints the list as JSON Schema for a local model (19f).
@@ -30,6 +31,9 @@ pub enum Arg {
     /// Free text (a window's or an app's name), at most this many characters, no control
     /// characters.
     Text { max: usize },
+    /// 21a: text with line ends and tabs (a file's contents, a command), at most this many
+    /// characters.
+    Body { max: usize },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,6 +131,12 @@ pub const TOOLS: &[Tool] = &[
     Tool { name: "save_as", about: "Save the file in the app in front (or a window) under a name: Save As, the name, Enter.", tier: Tier::Reversible, undo: false, params: &[p("name", Arg::Text { max: 100 }, "the file name, e.g. notes.txt"), opt("window", WINDOW, "the app in front if left out")] },
     Tool { name: "press_keys", about: "Press keys in the app in front, or a window: \"ctrl+t\" a new tab, \"ctrl+s\" save, \"enter\".", tier: Tier::Reversible, undo: false, params: &[p("keys", Arg::Text { max: 60 }, "like ctrl+shift+t; several with commas"), opt("window", WINDOW, "the app in front if left out")] },
     Tool { name: "desktop_setting", about: "Turn a desktop setting on or off.", tier: Tier::Reversible, undo: true, params: &[p("setting", Arg::OneOf(DESKTOP_SETTINGS), ""), p("on", ON, "")] },
+    // 21a: real work. Relative names are in your home folder; commands run in Siva's terminal.
+    // Outside your home folder, hidden files and drastic commands ask first (`work.rs`).
+    Tool { name: "read_file", about: "Read a text file.", tier: Tier::Read, undo: false, params: &[p("path", Arg::Text { max: 300 }, "e.g. notes.txt or ~/code/main.py")] },
+    Tool { name: "list_files", about: "List the files in a folder.", tier: Tier::Read, undo: false, params: &[opt("folder", Arg::Text { max: 300 }, "your home folder if left out")] },
+    Tool { name: "write_file", about: "Write a text file (made if new, replaced if there), e.g. a program.", tier: Tier::Reversible, undo: true, params: &[p("path", Arg::Text { max: 300 }, "e.g. hello.py"), p("content", Arg::Body { max: 20_000 }, "the whole file")] },
+    Tool { name: "run_command", about: "Run a command in Siva's terminal, where the user sees it, and get its output.", tier: Tier::Reversible, undo: false, params: &[p("command", Arg::Body { max: 2_000 }, "e.g. python3 hello.py"), opt("folder", Arg::Text { max: 300 }, "your home folder if left out")] },
     // ---- Tier 2: consequential, asks every time ----
     Tool { name: "close_window", about: "Close a window. Its app may lose unsaved work.", tier: Tier::Consequential, undo: false, params: &[p("window", WINDOW, "its title or app")] },
     Tool { name: "wifi", about: "Turn Wi-Fi on or off.", tier: Tier::Reversible, undo: true, params: &[p("on", ON, "")] },
@@ -134,6 +144,15 @@ pub const TOOLS: &[Tool] = &[
     Tool { name: "log_out", about: "Log out (closes every app).", tier: Tier::Consequential, undo: false, params: &[] },
     Tool { name: "power", about: "Sleep, restart or power off the computer.", tier: Tier::Consequential, undo: false, params: &[p("action", Arg::OneOf(&["sleep", "restart", "power-off"]), "")] },
 ];
+
+/// 21a: the tools for real work, not given to the small model on this PC (it can't use them
+/// safely; 21b/21c give them to a model that plans).
+pub const WORK: [&str; 4] = ["read_file", "list_files", "write_file", "run_command"];
+
+/// The tools the small model on this PC is told about.
+pub fn for_small_model() -> impl Iterator<Item = &'static Tool> {
+    TOOLS.iter().filter(|t| !WORK.contains(&t.name))
+}
 
 /// Names are unique (`names_are_unique_and_plain`), so a tool is its name.
 impl PartialEq for Tool {
@@ -181,6 +200,10 @@ fn check(arg: Arg, v: &Value) -> Result<(), String> {
             Some(s) if !s.trim().is_empty() && s.chars().count() <= max && !s.chars().any(char::is_control) => Ok(()),
             _ => Err(format!("a name of at most {max} characters")),
         },
+        Arg::Body { max } => match v.as_str() {
+            Some(s) if !s.trim().is_empty() && s.chars().count() <= max && !s.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\t' | '\r')) => Ok(()),
+            _ => Err(format!("text of at most {max} characters")),
+        },
     }
 }
 
@@ -212,7 +235,7 @@ fn arg_schema(param: &Param) -> Value {
         Arg::Int { min, max } => json!({"type": "integer", "minimum": min, "maximum": max}),
         Arg::Bool => json!({"type": "boolean"}),
         Arg::OneOf(words) => json!({"type": "string", "enum": words}),
-        Arg::Text { max } => json!({"type": "string", "minLength": 1, "maxLength": max}),
+        Arg::Text { max } | Arg::Body { max } => json!({"type": "string", "minLength": 1, "maxLength": max}),
     };
     if !param.about.is_empty() {
         s["description"] = json!(param.about);
@@ -258,9 +281,13 @@ mod tests {
 
     #[test]
     fn nothing_dangerous_is_listed() {
-        // Tier 3 stays out: no tool for these, whatever it would be called.
-        for word in ["password", "sudo", "shell", "command", "file", "delete", "install", "display", "polkit", "send", "email"] {
+        // Tier 3 stays out: no tool for these, whatever it would be called. 21a: files and
+        // commands came in (asking in `work.rs`), only those four.
+        for word in ["password", "sudo", "shell", "delete", "install", "display", "polkit", "send", "email"] {
             assert!(TOOLS.iter().all(|t| !t.name.contains(word)), "a tool named after {word}");
+        }
+        for word in ["command", "file"] {
+            assert!(TOOLS.iter().filter(|t| t.name.contains(word)).all(|t| WORK.contains(&t.name)), "{word}");
         }
         // The ones that lose work or end the session ask first.
         // 20a (2026-10-25): only the drastic ones; Wi-Fi and Bluetooth run at once, with Undo.
@@ -291,6 +318,14 @@ mod tests {
         assert!(lock.validate(&Value::Null).is_ok() && lock.validate(&json!({})).is_ok());
         // An optional one may be left out.
         assert!(find("mute").unwrap().validate(&json!({"on": true})).is_ok());
+        // 21a: a file's contents have line ends; a name doesn't.
+        let write = find("write_file").unwrap();
+        assert!(write.validate(&json!({"path": "hello.py", "content": "def f():\n\treturn 1\n"})).is_ok());
+        assert!(write.validate(&json!({"path": "a\nb", "content": "x"})).is_err());
+        assert!(write.validate(&json!({"path": "a.txt", "content": "bell\u{7}"})).is_err());
+        assert!(find("run_command").unwrap().validate(&json!({"command": "python3 hello.py"})).is_ok());
+        assert!(for_small_model().all(|t| !WORK.contains(&t.name)));
+        assert_eq!(for_small_model().count(), TOOLS.len() - WORK.len());
     }
 
     #[test]
