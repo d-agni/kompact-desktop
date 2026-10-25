@@ -510,6 +510,8 @@ pub struct ModelState {
     pub ready: bool,
     pub model: &'static str,
     pub missing: Option<String>,
+    /// 21c: the model for tasks without a cloud AI is set up.
+    pub work: bool,
 }
 
 pub fn state() -> ModelState {
@@ -518,7 +520,7 @@ pub fn state() -> ModelState {
         // 19i: one command sets it up (the package and the model).
         _ => Some("Run “kompact-assistant-setup understanding” in a terminal (1.1 GB, once).".into()),
     };
-    ModelState { ready: missing.is_none(), model: MODEL_NAME, missing }
+    ModelState { ready: missing.is_none(), model: MODEL_NAME, missing, work: super::local::ready() }
 }
 
 /// Runs llama-completion on `prompt`, whose first part is `shared` (kept in its own prompt

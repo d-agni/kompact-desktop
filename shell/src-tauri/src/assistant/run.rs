@@ -1513,7 +1513,7 @@ fn fill_in_it(steps: &mut [Step], last: Option<&str>) {
 
 /// A task of the work loop, as far as it got.
 struct AgentRun {
-    prefs: super::cloud::Prefs,
+    brain: agent::Brain,
     convo: agent::Convo,
     /// The calls of the model's last answer not yet done (the first may wait on a card).
     pending: std::collections::VecDeque<agent::Call>,
@@ -1638,13 +1638,24 @@ fn agent_done(app: &AppHandle, run: AgentRun, text: String, mood: &'static str) 
 /// The next answer, waiting (with a line in the plan) when the provider is rate-limited.
 async fn agent_ask(app: &AppHandle, run: &mut AgentRun) -> Result<(agent::Turn, Value), String> {
     for _ in 0..=agent::RETRIES {
-        let (p, c) = (run.prefs.clone(), run.convo.clone());
-        match tauri::async_runtime::spawn_blocking(move || agent::ask(&p, &c)).await.map_err(|e| e.to_string())? {
+        // 21c: the model on this PC takes a while: say so in the plan.
+        let thinking = run.brain.is_local();
+        if thinking {
+            run.items.push(PlanItem { text: "Thinking (on this PC)".into(), state: "now" });
+            emit_items(app, &run.items);
+        }
+        let (b, c) = (run.brain.clone(), run.convo.clone());
+        let answer = tauri::async_runtime::spawn_blocking(move || agent::ask(&b, &c)).await.map_err(|e| e.to_string())?;
+        if thinking {
+            run.items.pop();
+            emit_items(app, &run.items);
+        }
+        match answer {
             Ok(r) => return Ok(r),
             Err(agent::Failed::Other(e)) => return Err(e),
-            Err(agent::Failed::Wait(secs)) if secs > agent::LONGEST_WAIT => return Err(format!("{} is busy for {:.0} s more (its free limit)", run.prefs.provider().name, secs)),
+            Err(agent::Failed::Wait(secs)) if secs > agent::LONGEST_WAIT => return Err(format!("{} is busy for {:.0} s more (its free limit)", run.brain.name(), secs)),
             Err(agent::Failed::Wait(secs)) => {
-                run.items.push(PlanItem { text: format!("Waiting {:.0} s for {} (its free limit)", secs.ceil(), run.prefs.provider().name), state: "now" });
+                run.items.push(PlanItem { text: format!("Waiting {:.0} s for {} (its free limit)", secs.ceil(), run.brain.name()), state: "now" });
                 emit_items(app, &run.items);
                 let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs + 0.5);
                 while std::time::Instant::now() < until {
@@ -1659,7 +1670,7 @@ async fn agent_ask(app: &AppHandle, run: &mut AgentRun) -> Result<(agent::Turn, 
             }
         }
     }
-    Err(format!("{} stayed busy", run.prefs.provider().name))
+    Err(format!("{} stayed busy", run.brain.name()))
 }
 
 /// 21b: the loop: run the calls the model made, give it what happened, ask again, until it
@@ -1747,7 +1758,18 @@ async fn agent_loop(app: &AppHandle, mut run: AgentRun, mut confirmed: bool) -> 
         let (turn, back) = match agent_ask(app, &mut run).await {
             Ok(t) => t,
             Err(e) if e == "stopped" => return agent_done(app, run, "Stopped.".into(), "happy"),
-            Err(e) => return agent_done(app, run, format!("The cloud AI stopped helping: {e}."), "sorry"),
+            // 21c: the cloud AI failed before the task began: the model on this PC takes it.
+            Err(e) if run.calls == 0 && !run.brain.is_local() && super::local::ready() => {
+                info!("agent: {} couldn't start the task ({e}); the model on this PC takes it", run.brain.name());
+                let goal = run.convo.messages.first().and_then(|m| m["content"].as_str()).unwrap_or("").to_string();
+                run.brain = agent::Brain::Local;
+                run.convo = agent::Convo::new(agent::Shape::OpenAi, run.convo.system.clone(), &goal, true);
+                continue;
+            }
+            Err(e) => {
+                let who = if run.brain.is_local() { "My model on this PC" } else { "The cloud AI" };
+                return agent_done(app, run, format!("{who} stopped helping: {e}."), "sorry");
+            }
         };
         if turn.calls.is_empty() {
             let text = turn.text.trim().to_string();
@@ -1758,18 +1780,21 @@ async fn agent_loop(app: &AppHandle, mut run: AgentRun, mut confirmed: bool) -> 
     }
 }
 
-/// 21b: a task for the work loop on the cloud AI `p`.
-async fn work_on(app: &AppHandle, p: super::cloud::Prefs, text: &str) -> Reply {
+/// 21b: a task for the work loop, on `brain` (21c: the cloud AI, or the model on this PC).
+async fn work_on(app: &AppHandle, brain: agent::Brain, text: &str) -> Reply {
     let home = work::home().map(|h| h.display().to_string()).unwrap_or_else(|| "~".into());
     let now = super::diagnose::now_text(crate::datetime::load_prefs().hour24);
     let mut apps: Vec<String> = windows(app).into_iter().map(|w| w.name).collect();
     apps.sort();
     apps.dedup();
-    let shape = agent::shape_of(&p);
-    info!("agent: a task for {} {} ({} characters)", p.provider().id, p.model(), text.chars().count());
-    activity::record(app, Kind::Understood, "", &format!("A task for {}", p.provider().name));
-    let convo = agent::Convo::new(shape, agent::system_prompt(&home, &now, &apps), text.trim());
-    let run = AgentRun { prefs: p, convo, pending: Default::default(), results: Vec::new(), calls: 0, items: Vec::new(), undo: Vec::new(), tainted: false };
+    let local = brain.is_local();
+    match &brain {
+        agent::Brain::Cloud(p) => info!("agent: a task for {} {} ({} characters)", p.provider().id, p.model(), text.chars().count()),
+        agent::Brain::Local => info!("agent: a task for {} on this PC ({} characters)", super::local::NAME, text.chars().count()),
+    }
+    activity::record(app, Kind::Understood, "", &format!("A task for {}", brain.name()));
+    let convo = agent::Convo::new(brain.shape(), agent::system_prompt(&home, &now, &apps), text.trim(), local);
+    let run = AgentRun { brain, convo, pending: Default::default(), results: Vec::new(), calls: 0, items: Vec::new(), undo: Vec::new(), tainted: false };
     agent_loop(app, run, false).await
 }
 
@@ -1789,9 +1814,11 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
         };
     }
     let parsed = rules::parse(text);
-    // 21b: work on files, code and commands goes to the work loop, when the cloud AI is in use
-    // (what the rules do with only the work tools, like "run python3 hello.py", stays with them).
-    if let Some(p) = super::cloud::active() {
+    // 21b: work on files, code and commands goes to the work loop, on the cloud AI when it's in
+    // use, else (21c) the model on this PC when it's set up (what the rules do with only the
+    // work tools, like "run python3 hello.py", stays with them).
+    let brain = super::cloud::active().map(agent::Brain::Cloud).or_else(|| super::local::ready().then_some(agent::Brain::Local));
+    if let Some(brain) = brain {
         let work = agent::is_work(&rules::normalize(text))
             && match &parsed {
                 Parsed::Steps(s) => !s.iter().all(|s| super::tools::WORK.contains(&s.tool)),
@@ -1799,7 +1826,7 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
                 _ => false,
             };
         if work {
-            return work_on(app, p, text).await;
+            return work_on(app, brain, text).await;
         }
     }
     // 20a: just a name ("Firefox"): what to do with it? (Never chat about it.)

@@ -294,6 +294,45 @@ pub fn post(url: &str, headers: &[String], body: &str, seconds: u32) -> Result<(
     Ok((status, text))
 }
 
+/// 21c: a request to Siva's own model server on its UNIX socket (`local.rs`): this PC only,
+/// never the network. POST `body` to `path`, or GET it when `body` is empty: the HTTP status and
+/// the body. Blocking.
+pub fn post_local(socket: &std::path::Path, path: &str, body: &str, seconds: u32) -> Result<(u16, String), String> {
+    use std::io::Write;
+    if !socket.parent().is_some_and(|d| d.ends_with("kompact-siva")) || !path.starts_with('/') || path.contains(char::is_whitespace) {
+        return Err("I'm not allowed to go there.".into());
+    }
+    let mut cmd = Command::new("curl");
+    cmd.args(["--silent", "--show-error", "--unix-socket"]).arg(socket).args(["--write-out", "\n%{http_code}", "--max-time"]).arg(seconds.to_string());
+    if !body.is_empty() {
+        cmd.args(["-H", "Content-Type: application/json", "--data-binary", "@-"]);
+    }
+    let mut child = cmd
+        .arg(format!("http://localhost{path}"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| "I need curl to talk to my model: install it with “sudo apt install curl”.".to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(match out.status.code() {
+            Some(7) => "my model isn't running".into(),
+            Some(28) => "my model took too long".into(),
+            c => format!("my model didn't answer (curl {})", c.unwrap_or(-1)),
+        });
+    }
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let status = text.rsplit_once('\n').and_then(|(_, code)| code.trim().parse::<u16>().ok()).unwrap_or(0);
+    if let Some(i) = text.rfind('\n') {
+        text.truncate(i);
+    }
+    Ok((status, text))
+}
+
 fn fetch_json(url: &str) -> Result<Value, String> {
     serde_json::from_str(&fetch(url)?).map_err(|_| "That service sent something I can't read.".to_string())
 }
