@@ -611,6 +611,11 @@ if (tauri) {
     if (e.payload === "type") void openType();
     else void listen();
   });
+  // 20f: a try from Settings → Assistant.
+  tauri.event.listen("kompact-assistant-try", (/** @type {{payload: string}} */ e) => {
+    setMini(false);
+    void askText(e.payload);
+  });
   tauri.event.listen("kompact-assistant", (/** @type {{payload: {state: string, detail: string}}} */ e) => {
     const { state: s, detail } = e.payload;
     if (s === "speaking" || s === "spoken") {

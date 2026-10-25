@@ -224,6 +224,7 @@ fn main() {
             assistant::hud::assistant_toggle,
             assistant::hud::hud_hide,
             assistant::hud::hud_show,
+            assistant::hud::hud_try,
             assistant::hud::hud_input,
             assistant::hud::hud_keyboard,
             assistant::run::assistant_listen,

@@ -749,6 +749,44 @@ function renderAssistant() {
   renderInternet();
   renderCloud();
   renderActivity();
+  renderOverview();
+}
+
+// ---- 20f: the overview and the tabs ----
+
+/** One tile: its dot (ok / warn / off) and what it says. @param {string} id @param {"ok" | "warn" | "off"} state @param {string} detail */
+function asTile(id, state, detail) {
+  const t = $(id);
+  t.dataset.state = state;
+  /** @type {HTMLElement} */ (t.querySelector(".as-t-detail")).textContent = detail;
+}
+
+function renderOverview() {
+  if (voice) asTile("as-t-hear", voice.ready ? "ok" : "warn", voice.ready ? `Ready (${voice.model})` : "Not set up");
+  if (speech) {
+    const how = /** @type {Record<string, string>} */ ({ voice: "When you speak", always: "Always", never: "Off" })[speech.speak] || "";
+    asTile("as-t-speak", !speech.ready ? "warn" : speech.speak === "never" ? "off" : "ok", speech.ready ? how : "Not set up");
+  }
+  const cloudOn = cloud && cloud.on && !cloud.not_used;
+  const provider = cloudOn ? cloud.providers.find((/** @type {{id: string}} */ p) => p.id === cloud.provider)?.name || cloud.provider : "";
+  asTile("as-t-think", cloudOn || model?.ready ? "ok" : "warn", cloudOn ? `Cloud AI (${provider})` : model?.ready ? `On this PC (${model.model})` : "Built-in rules only");
+  if (internet) asTile("as-t-net", internet.mode === "off" ? "off" : "ok", /** @type {Record<string, string>} */ ({ always: "Always", ask: "Asks each time", off: "Off" })[internet.mode]);
+}
+
+/** @param {string} name */
+function showAsTab(name) {
+  for (const b of document.querySelectorAll("#as-tabs [data-tab]")) b.setAttribute("aria-checked", String(/** @type {HTMLElement} */ (b).dataset.tab === name));
+  for (const t of document.querySelectorAll("#pane-assistant .as-tab")) /** @type {HTMLElement} */ (t).hidden = /** @type {HTMLElement} */ (t).dataset.tab !== name;
+  try {
+    localStorage.setItem("assistant-tab", name);
+  } catch {
+    // Remembering the tab is a convenience only.
+  }
+}
+
+/** Siva's HUD with this request, as if typed there ("" opens the Type box). @param {string} text */
+function trySiva(text) {
+  void asCall("hud_try", { text });
 }
 
 /** 20d */
@@ -773,6 +811,7 @@ async function setInternet(mode, place) {
   // 20d-2: the cloud AI is used only while Internet is Always.
   cloud = (await asCall("cloud_state")) || cloud;
   renderCloud();
+  renderOverview();
 }
 
 /** 20d-2 */
@@ -813,6 +852,7 @@ async function setCloud(key) {
   if (st) cloud = st;
   $("as-cloud-result").textContent = "";
   renderCloud();
+  renderOverview();
 }
 
 async function testCloud() {
@@ -830,8 +870,11 @@ async function testCloud() {
 
 function renderActivity() {
   const list = $("as-list");
+  // 20f: the search box.
+  const q = /** @type {HTMLInputElement} */ ($("as-search")).value.trim().toLowerCase();
+  const shown = q ? activity.filter((e) => `${e.text} ${e.tool} ${AS_KINDS[e.kind] || e.kind}`.toLowerCase().includes(q)) : activity;
   list.replaceChildren(
-    ...activity.map((e) => {
+    ...shown.map((e) => {
       const row = document.createElement("div");
       row.className = `row as-entry as-${e.kind}`;
       const what = e.kind === "asked" || e.kind === "heard" ? `“${e.text}”` : e.text || (e.tool ? e.tool.replace(/_/g, " ") : "");
@@ -841,7 +884,7 @@ function renderActivity() {
       return row;
     }),
   );
-  if (!activity.length) list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: "Nothing yet. What you ask Siva shows up here." }));
+  if (!shown.length) list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: q ? "Nothing matches." : "Nothing yet. What you ask Siva shows up here." }));
   /** @type {HTMLButtonElement} */ ($("as-clear")).disabled = !activity.length;
 }
 
@@ -1051,6 +1094,19 @@ $("as-cloud-key").addEventListener("change", (e) => {
 });
 $("as-cloud-forget").addEventListener("click", () => void setCloud(""));
 $("as-cloud-test").addEventListener("click", () => void testCloud());
+// 20f
+for (const b of document.querySelectorAll("#as-tabs [data-tab]")) b.addEventListener("click", () => showAsTab(/** @type {HTMLElement} */ (b).dataset.tab || "general"));
+for (const t of document.querySelectorAll("#pane-assistant .as-tile")) t.addEventListener("click", () => showAsTab(/** @type {HTMLElement} */ (t).dataset.go || "general"));
+for (const c of document.querySelectorAll("#pane-assistant [data-try]")) c.addEventListener("click", () => trySiva(/** @type {HTMLElement} */ (c).dataset.try || ""));
+$("as-try-speak").addEventListener("click", () => void asCall("assistant_toggle"));
+$("as-try-type").addEventListener("click", () => trySiva(""));
+$("as-search").addEventListener("input", () => renderActivity());
+try {
+  const tab = localStorage.getItem("assistant-tab");
+  if (tab && document.querySelector(`#as-tabs [data-tab="${tab}"]`)) showAsTab(tab);
+} catch {
+  // A private window: the first tab.
+}
 $("as-speak").addEventListener("change", async (e) => {
   const st = await asCall("set_speak", { speak: /** @type {HTMLSelectElement} */ (e.target).value });
   if (st) speech = st;

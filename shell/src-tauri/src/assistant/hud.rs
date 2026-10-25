@@ -42,6 +42,20 @@ pub fn assistant_toggle(app: AppHandle) -> Result<(), String> {
     open(&app, how)
 }
 
+/// 20f: Settings → Assistant's tries: the HUD with this request, as if typed there ("": the
+/// Type box).
+#[tauri::command]
+pub fn hud_try(app: AppHandle, text: String) -> Result<(), String> {
+    let text: String = text.chars().filter(|c| !c.is_control()).take(300).collect();
+    if text.trim().is_empty() {
+        return open(&app, "type");
+    }
+    window(&app)?.show().map_err(|e| e.to_string())?;
+    info!("assistant: HUD open (a try from Settings)");
+    let _ = app.emit("kompact-assistant-try", text);
+    Ok(())
+}
+
 /// 20c: show the HUD as it is (a task that finished out of sight needs you: a card).
 #[tauri::command]
 pub fn hud_show(app: AppHandle) -> Result<(), String> {
