@@ -247,6 +247,13 @@ pub fn talk(p: &Prefs, text: &str, history: &[(String, String)], now: &str) -> R
     super::model::checked_talk(&answer)
 }
 
+/// 20e-2: text for an app, written by the cloud AI (whole; blocking).
+pub fn write(p: &Prefs, about: &str, app: &str) -> Result<String, String> {
+    let answer = send(p, super::model::WRITER, &[("user", super::model::write_request(about, app))])?;
+    info!("cloud: wrote {} characters for {about:?}", answer.chars().count());
+    Ok(answer)
+}
+
 // ---- Settings → Assistant ----
 
 #[derive(Debug, Serialize)]

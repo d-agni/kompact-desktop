@@ -248,7 +248,7 @@ fn reply(text: impl Into<String>, mood: &'static str) -> Reply {
 
 const HELP: &str = "Try: “volume 30”, “dark mode”, “open Firefox”, “put Firefox and Terminal side by side”, \
 “next song”, “do not disturb”, “go to desktop 2”, “why is my computer slow?”, “what's the weather tomorrow?”, “news about cricket”, \
-“who is A. R. Rahman?”, “search for rust traits”, or a routine: “set up for coding”.";
+“who is A. R. Rahman?”, “search for rust traits”, “write a joke in Text Editor”, “type Dear Sam”, “new tab”, “save it”, or a routine: “set up for coding”.";
 
 // ---- undo ----
 
@@ -446,6 +446,72 @@ fn send(app: &AppHandle, action: &str, id: Option<u64>) -> Result<(), String> {
 
 fn place_line(app: &AppHandle, id: u64, to: &str) -> Result<(), String> {
     app.state::<Compositor>().send_line_pub("place", &format!("place {id} {to}\n"))
+}
+
+/// 20e-3: type `text` (or press `keys`) in window `id` and wait for kompact to say it's done.
+async fn keys_to(app: &AppHandle, id: u64, typing: bool, what: &str) -> Result<Value, String> {
+    let req = app.state::<Assistant>().id();
+    let line = if typing { crate::compositor::type_line(req, id, what) } else { crate::compositor::press_line(req, id, what) };
+    let line = line.ok_or("That's too much to type at once.")?;
+    let wait = std::time::Duration::from_millis(3000 + 20 * what.chars().count() as u64);
+    let a2 = app.clone();
+    let answer = tauri::async_runtime::spawn_blocking(move || a2.state::<Compositor>().type_into(req, &line, wait)).await.map_err(|e| e.to_string())??;
+    if answer.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(answer.get("why").and_then(Value::as_str).unwrap_or("it didn't work").to_string());
+    }
+    Ok(answer)
+}
+
+/// 20e-2: write `about` and type it into window `id`, a sentence at a time (blocking). The
+/// words typed and the characters left out.
+fn write_into(app: &AppHandle, id: u64, name: &str, about: &str, terminal: bool) -> Result<(usize, String), String> {
+    let mut typed = 0usize;
+    let mut missing = String::new();
+    let mut put = |piece: &str| -> Result<(), String> {
+        // Into a terminal (asked first): never a line end, which would run it.
+        let piece = if terminal { piece.replace('\n', " ") } else { piece.to_string() };
+        let req = app.state::<Assistant>().id();
+        let line = crate::compositor::type_line(req, id, &piece).ok_or("a sentence too long to type")?;
+        let wait = std::time::Duration::from_millis(3000 + 20 * piece.chars().count() as u64);
+        let answer = app.state::<Compositor>().type_into(req, &line, wait)?;
+        if answer.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(format!("I couldn't type into {name}: {}.", answer.get("why").and_then(Value::as_str).unwrap_or("it didn't work")));
+        }
+        typed += piece.split_whitespace().count();
+        for c in answer.get("missing").and_then(Value::as_str).unwrap_or("").chars() {
+            if !missing.contains(c) {
+                missing.push(c);
+            }
+        }
+        Ok(())
+    };
+    if let Some(p) = super::cloud::active() {
+        match super::cloud::write(&p, about, name) {
+            Ok(text) => {
+                for piece in super::model::pieces_of(&text) {
+                    put(&piece)?;
+                }
+                drop(put);
+                return Ok((typed, missing));
+            }
+            Err(e) if super::model::state().ready => info!("assistant: the cloud AI couldn't write ({e}); the local model writes"),
+            Err(e) => return Err(format!("I couldn't write that: {e}.")),
+        }
+    }
+    super::model::write(about, name, &mut put)?;
+    drop(put);
+    Ok((typed, missing))
+}
+
+/// 20e: the window to type into: the one named, else the app in front.
+async fn typing_window(app: &AppHandle, s: &Step, ctx: &Ctx) -> Result<WinCand, String> {
+    match s.args.get("window").and_then(Value::as_str) {
+        Some(q) => find_window(app, q, ctx).await,
+        None => windows(app)
+            .into_iter()
+            .find(|w| w.focused && !w.minimized)
+            .ok_or_else(|| "There's no app in front to type into. Say which, like “type hello in Text Editor”.".to_string()),
+    }
 }
 
 /// 20b: a window's desktop (1-based), from kompact's window list.
@@ -794,6 +860,72 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             super::web::save_prefs(&p)?;
             done(format!("Got it: you're in {}. I'll use it for the weather.", p.place), Some(Undo::Town(old)))
         }
+        // 20e: kompact types or presses the keys in the window, and says how it went.
+        "type_text" | "press_keys" => {
+            let w = typing_window(app, s, ctx).await?;
+            let typing = s.tool == "type_text";
+            let what = if typing { str_arg("text") } else { str_arg("keys") };
+            let answer = keys_to(app, w.id, typing, &what).await.map_err(|why| format!("I couldn't {} {}: {why}.", if typing { "type into" } else { "press keys in" }, w.name))?;
+            let missing = answer.get("missing").and_then(Value::as_str).unwrap_or("");
+            let mut text = if typing { format!("Typed into {}.", w.name) } else { format!("Pressed {what} in {}.", w.name) };
+            if !missing.is_empty() {
+                text.push_str(&format!(" I left out “{missing}”: not on your keyboard layout."));
+            }
+            done(text, None)
+        }
+        // 20e-2: written by the cloud AI (when in use) or the local model, typed a sentence at a
+        // time as it comes.
+        "write_text" => {
+            let w = typing_window(app, s, ctx).await?;
+            let about = str_arg("about");
+            let terminal = policy::is_terminal(&w.app_id, &w.name, &w.about);
+            if super::cloud::active().is_none() && !super::model::state().ready {
+                return Err("I need my model to write; set it up with “kompact-assistant-setup understanding”, or add a cloud AI in Settings → Assistant.".into());
+            }
+            let (a2, id, name) = (app.clone(), w.id, w.name.clone());
+            let r = tauri::async_runtime::spawn_blocking(move || write_into(&a2, id, &name, &about, terminal)).await.map_err(|e| e.to_string())?;
+            let (words, missing) = r?;
+            info!("assistant: wrote {words} words in {}", w.name);
+            let mut text = format!("Written in {}.", w.name);
+            if !missing.is_empty() {
+                text.push_str(&format!(" I left out “{missing}”: not on your keyboard layout."));
+            }
+            done(text, None)
+        }
+        // 20e-3: Save As, the name in its window, Enter.
+        "save_as" => {
+            let w = typing_window(app, s, ctx).await?;
+            let name = str_arg("name");
+            let before: Vec<u64> = windows(app).iter().map(|w| w.id).collect();
+            keys_to(app, w.id, false, "ctrl+shift+s").await.map_err(|why| format!("I couldn't save in {}: {why}.", w.name))?;
+            let started = std::time::Instant::now();
+            let dialog = loop {
+                if let Some(d) = windows(app).into_iter().find(|x| x.focused && !before.contains(&x.id)) {
+                    break Some(d);
+                }
+                if started.elapsed() > std::time::Duration::from_secs(6) {
+                    break None;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            };
+            let Some(d) = dialog else {
+                return Err(format!("{}'s save window didn't open.", w.name));
+            };
+            info!("assistant: save window after {} ms ({})", started.elapsed().as_millis(), d.app_id);
+            // Its name field takes a moment to be ready.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            for (typing, what) in [(false, "ctrl+a"), (true, name.as_str()), (false, "enter")] {
+                keys_to(app, d.id, typing, what).await.map_err(|why| format!("I couldn't fill in the save window: {why}."))?;
+            }
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_secs(3) {
+                if !windows(app).iter().any(|x| x.id == d.id) {
+                    return done(format!("Saved as {name}."), None);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            done(format!("The save window is still open: a file called {name} may be there already, so it asks you."), None)
+        }
         "search_web" => {
             let site = a.get("site").and_then(Value::as_str).unwrap_or("web");
             let url = super::browser::search_url(site, &str_arg("query"));
@@ -981,7 +1113,17 @@ async fn run_steps_in(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<
             said.push(format!("Stopped: {i} of {} done.", steps.len()));
             return finish(app, said, undo, true);
         }
-        let s = &steps[i];
+        let mut cur = steps[i].clone();
+        // 20e-3: writing with no app in front: into Text Editor.
+        if matches!(cur.tool, "write_text" | "type_text") && cur.args.get("window").is_none() && !windows(app).iter().any(|w| w.focused && !w.minimized) {
+            let open = Step { tool: "open_app", args: json!({"app": "text editor"}) };
+            if let Err(e) = run_step(app, &open, ctx).await {
+                info!("assistant: no Text Editor to write in: {e}");
+            } else {
+                cur.args["window"] = json!("text editor");
+            }
+        }
+        let s = &cur;
         plan.set(i, "now");
         // 20d: going online, as Settings → Assistant allows (a click on Go Online is a yes).
         if super::web::online(s.tool) && !confirmed {
@@ -999,6 +1141,29 @@ async fn run_steps_in(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<
                     return wait_on_card(app, steps, i, said, undo, format!("May I go online to {what}?"), "Go Online".into(), true, plan);
                 }
                 super::web::Mode::Always => {}
+            }
+        }
+        // 20e: typing into a terminal, or keys that quit or delete for good: ask first.
+        if matches!(s.tool, "type_text" | "write_text" | "press_keys") && !confirmed {
+            match typing_window(app, s, ctx).await {
+                Ok(w) => {
+                    if let Some(why) = policy::typing_asks(s.tool, &s.args, policy::is_terminal(&w.app_id, &w.name, &w.about)) {
+                        let (text, button) = if s.tool == "type_text" {
+                            (format!("Type “{}” in {}? {why}", s.args["text"].as_str().unwrap_or(""), w.name), "Type")
+                        } else if s.tool == "write_text" {
+                            (format!("Write {} in {}? {why}", s.args["about"].as_str().unwrap_or(""), w.name), "Write")
+                        } else {
+                            (format!("Press {} in {}? {why}", s.args["keys"].as_str().unwrap_or(""), w.name), "Press")
+                        };
+                        return wait_on_card(app, steps, i, said, undo, text, button.into(), false, plan);
+                    }
+                }
+                Err(e) => {
+                    plan.set(i, "failed");
+                    plan.rest(i + 1, "stopped");
+                    said.push(e);
+                    return Reply { mood: "sorry", ..finish(app, said, undo, true) };
+                }
             }
         }
         let proposal = Proposal { tool: s.tool.to_string(), args: s.args.clone(), from_untrusted: false };
@@ -1042,7 +1207,11 @@ async fn run_steps_in(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<
                         }
                         activity::record(app, Kind::Ran, s.tool, &d.text);
                         plan.set(i, "done");
-                        said.push(d.text);
+                        // 20e-3: "Opening Text Editor." isn't said when the next steps go on in it.
+                        let goes_on = s.tool == "open_app" && steps[i + 1..].iter().any(|n| n.args.get("window").and_then(Value::as_str).is_some_and(|w| rules::normalize(w) == rules::normalize(s.args["app"].as_str().unwrap_or(""))));
+                        if !goes_on {
+                            said.push(d.text);
+                        }
                         undo.extend(d.undo);
                     }
                     Err(e) => {

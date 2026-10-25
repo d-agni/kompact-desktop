@@ -174,6 +174,9 @@ pub struct Kompact {
     /// held.
     pub pressed_keys: std::collections::HashSet<smithay::input::keyboard::Keycode>,
     pub pressed_buttons: std::collections::HashSet<u32>,
+    /// 20e: what Siva is typing now (`typing.rs`), and the loop to run its timer on.
+    pub typing: Option<crate::typing::Job>,
+    pub loop_handle: smithay::reexports::calloop::LoopHandle<'static, Kompact>,
 
     /// Remembered floating geometry per app-id (Phase 2c), and the file it's persisted to.
     pub geometry_memory: crate::geometry_memory::GeometryMemory,
@@ -473,6 +476,8 @@ impl Kompact {
             pending_vt: None,
             pressed_keys: std::collections::HashSet::new(),
             pressed_buttons: std::collections::HashSet::new(),
+            typing: None,
+            loop_handle: loop_handle.clone(),
             geometry_memory,
             geometry_memory_path,
             focus_follows_mouse,

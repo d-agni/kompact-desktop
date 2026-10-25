@@ -2324,7 +2324,11 @@ impl Kompact {
     /// Run one shell request.
     pub fn handle_shell_request(&mut self, req: crate::ipc::Request) {
         use crate::ipc::Request;
-        tracing::info!("shell channel: {req:?}");
+        match &req {
+            // 20e: never what is typed in the log.
+            Request::Type { req: n, id, text } => tracing::info!("shell channel: Type {{ req: {n}, id: {id}, {} characters }}", text.chars().count()),
+            _ => tracing::info!("shell channel: {req:?}"),
+        }
         // 8d: nothing the shell asks for happens behind the lock screen.
         if self.lock.is_locked() {
             tracing::info!("shell channel: ignored, the screen is locked");
@@ -2367,6 +2371,9 @@ impl Kompact {
                 }
             }
             Request::ShowDesktop => self.toggle_show_desktop(),
+            // 20e: Siva types or presses keys in a window (`typing.rs`).
+            Request::Type { req, id, text } => self.start_typing(req, id, crate::typing::What::Text(text)),
+            Request::Press { req, id, keys } => self.start_typing(req, id, crate::typing::What::Keys(keys)),
             Request::Thumb(id) => self.thumbs.request(id),
             Request::Workspace(n) => self.switch_workspace(n - 1),
             Request::Layout => {

@@ -38,6 +38,7 @@ mod theme;
 mod thumbnail;
 mod title_text;
 mod titlebar;
+mod typing;
 mod uploads;
 mod vt;
 mod workspace;

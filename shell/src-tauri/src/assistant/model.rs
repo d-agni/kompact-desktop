@@ -75,6 +75,7 @@ it's way too loud -> change_volume(by=-20)
 i can't hear anything -> mute(on=False); set_volume(percent=60)
 get the browser out of the way -> minimize_window(window="firefox")
 move files to the left -> place_window(window="files", where="left")
+write a short poem in text editor -> write_text(about="a short poem", window="text editor")
 what song is this -> now_playing()
 skip this one -> media(action="next")
 it's too bright -> appearance(mode="dark")
@@ -261,6 +262,12 @@ fn tool_words(tool: &str) -> &'static [&'static str] {
         "news" => &["news", "headline", "happening"],
         "look_up" => &["look", "search", "define", "definition", "meaning", "wiki"],
         "set_place" => &["live", "town", "city", "location"],
+        // 20e
+        "type_text" => &["type", "enter", "fill"],
+        // Not "joke" or "poem": "tell me a joke" is talk.
+        "write_text" => &["write", "compose", "draft"],
+        "save_as" => &["save", "name", "call"],
+        "press_keys" => &["press", "hit", "key", "tab", "save", "copy", "paste", "select", "reload", "refresh", "zoom", "print", "scroll", "enter", "escape"],
         _ => &[],
     }
 }
@@ -290,7 +297,7 @@ pub fn chat_prefix() -> String {
 /// 20d-2: who Siva is, for the cloud AI too.
 pub const PERSONA: &str = "You are Siva, the assistant built into this person's Linux desktop. Talk like a warm, friendly, \
 quick-witted person: one or two short sentences, plain words, no lists, no markdown, no emojis, and never \"as an AI\". \
-The desktop itself does what they ask (windows, apps, sound, settings, and looking up the weather, news and facts \
+The desktop itself does what they ask (windows, apps, sound, settings, typing into apps, and looking up the weather, news and facts \
 online); you can't read their files or see their screen, and you say so in a few words when it matters. If you don't know something, say so. Never claim \
 you did something. \"user\" is the person; \"assistant\" is you.";
 
@@ -354,6 +361,133 @@ pub fn cache_key(prefix: &str, model_size: u64) -> String {
     format!("prompt-{h:016x}.cache")
 }
 
+// ---- writing (20e-2, pure) ----
+
+/// 20e-2: Siva writing text for an app ("write a joke in Text Editor").
+pub const WRITER: &str = "You write text for this person to put into an app on their desktop. Write only the text itself: \
+no title, no preface such as \"Sure\" or \"Here is\", no quotes around it, no markdown, no emojis. Keep it short, at most \
+60 words, unless they ask for something longer. If they leave it open (\"something\"), write a few pleasant lines \
+of your own choosing, never about the app or about writing.";
+
+/// The same every time, for the prompt cache.
+pub fn write_prefix() -> String {
+    format!("<|im_start|>system\n{WRITER}<|im_end|>\n")
+}
+
+/// What to ask for: "Write a joke (it goes into Text Editor)".
+pub fn write_request(about: &str, app: &str) -> String {
+    let about: String = about.chars().map(|c| if c.is_control() { ' ' } else { c }).take(300).collect();
+    // "something": the small model wrote about the app, or said the request back.
+    let open = ["something", "anything", "some text", "something nice", "something for me", "whatever"];
+    let about = if open.contains(&about.trim().to_lowercase().as_str()) { "a short, pleasant thought for the day".to_string() } else { about };
+    if app.is_empty() {
+        format!("Write {}", about.trim())
+    } else {
+        format!("Write {} (it goes into {app})", about.trim())
+    }
+}
+
+pub fn write_prompt(about: &str, app: &str) -> String {
+    format!("{}<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n", write_prefix(), write_request(about, app))
+}
+
+/// Most a piece of writing may be.
+pub const MAX_WRITING: usize = 800;
+
+/// 20e-2: what the model writes, cut into sentences as it comes (so typing can start at the
+/// first one), its prefaces ("Sure, here's one:"), markers and quotes left out.
+#[derive(Default)]
+pub struct Pieces {
+    buf: String,
+    started: bool,
+    total: usize,
+    /// Line ends waiting for more text (none are typed at the end).
+    gap: String,
+}
+
+impl Pieces {
+    /// More of the answer: the sentences now complete.
+    pub fn push(&mut self, more: &str) -> Vec<String> {
+        self.buf.push_str(more);
+        for marker in ["<|im_end|>", "[end of text]", "<|im_start|>"] {
+            if let Some(i) = self.buf.find(marker) {
+                self.buf.truncate(i);
+            }
+        }
+        let mut out = Vec::new();
+        loop {
+            let cut = self.buf.char_indices().find(|&(i, c)| c == '\n' || (".!?".contains(c) && self.buf[i + 1..].starts_with(' ')));
+            let Some((i, c)) = cut else { break };
+            let piece: String = self.buf[..i + c.len_utf8()].to_string();
+            self.buf.drain(..i + c.len_utf8());
+            out.extend(self.tidy(piece));
+        }
+        out
+    }
+
+    /// The rest, at the end.
+    pub fn finish(&mut self) -> Option<String> {
+        let rest = std::mem::take(&mut self.buf);
+        let rest = rest.trim_end().trim_end_matches(['"', '”']).to_string();
+        let piece = self.tidy(rest);
+        self.gap.clear();
+        piece
+    }
+
+    fn tidy(&mut self, piece: String) -> Option<String> {
+        let mut p = piece;
+        if !self.started {
+            let t = p.trim_start();
+            let lower = t.to_lowercase();
+            // "Sure, here's a short one:", "Certainly!" on its own: not part of the text.
+            let opens = ["sure", "here", "certainly", "of course", "okay", "ok,"].iter().any(|w| lower.starts_with(w));
+            // The request said back ("Write a joke (it goes into Text Editor)").
+            let echo = lower.starts_with("write ") && lower.contains("(it goes into");
+            if echo || opens && (t.trim_end().ends_with(':') || t.trim_end().ends_with('!') && t.len() < 40) || t.is_empty() {
+                return None;
+            }
+            // "Sure, here's one for you: Hello…": the text starts after the colon.
+            let t = match t.find(':') {
+                Some(i) if opens => t[i + 1..].trim_start(),
+                _ => t,
+            };
+            p = t.trim_start_matches(['"', '“']).to_string();
+            if p.trim().is_empty() {
+                return None;
+            }
+            self.started = true;
+        }
+        // Blank lines only once more text follows them.
+        if p.trim().is_empty() {
+            self.gap.push_str(&p);
+            return None;
+        }
+        let p = std::mem::take(&mut self.gap) + &p;
+        // Its own line ends too wait for what follows.
+        let body = p.trim_end_matches(|c: char| c == '\n' || c == ' ').len();
+        let body = if p[body..].contains('\n') { body } else { p.len() };
+        self.gap.push_str(&p[body..]);
+        let p = p[..body].to_string();
+        // Space between sentences, as written.
+        let room = MAX_WRITING.saturating_sub(self.total);
+        let p: String = p.chars().take(room).collect();
+        self.total += p.chars().count();
+        (!p.is_empty()).then_some(p)
+    }
+
+    pub fn full(&self) -> bool {
+        self.total >= MAX_WRITING
+    }
+}
+
+/// All of a written answer, as pieces (the cloud AI's comes whole).
+pub fn pieces_of(text: &str) -> Vec<String> {
+    let mut p = Pieces::default();
+    let mut out = p.push(text);
+    out.extend(p.finish());
+    out
+}
+
 // ---- llama-completion ----
 
 fn home_dir(var: &str, fallback: &str) -> Option<PathBuf> {
@@ -388,6 +522,20 @@ pub fn state() -> ModelState {
 /// Runs llama-completion on `prompt`, whose first part is `shared` (kept in its own prompt
 /// cache, `kind` naming it), with `args`. Its output, and whether the cache was made now.
 fn run_model(kind: &str, shared: &str, prompt: &str, args: &[&str]) -> Result<(String, bool, u128), String> {
+    let started = Instant::now();
+    let (mut cmd, fresh) = llama(kind, shared, prompt, args)?;
+    let out = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(|e| format!("can't start llama-completion: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        warn!("model: llama-completion failed ({}): {}", out.status, err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or(""));
+        return Err("the model didn't run".into());
+    }
+    Ok((String::from_utf8_lossy(&out.stdout).replace("[end of text]", ""), fresh, started.elapsed().as_millis()))
+}
+
+/// The llama-completion command for `prompt` (its first part `shared`, in the prompt cache of
+/// `kind`), and whether that cache is made now.
+fn llama(kind: &str, shared: &str, prompt: &str, args: &[&str]) -> Result<(Command, bool), String> {
     let model = model_file().ok_or("the model isn't there")?;
     let size = std::fs::metadata(&model).map(|m| m.len()).unwrap_or(0);
     let cache_dir = home_dir("XDG_CACHE_HOME", ".cache").ok_or("no home folder")?.join("kompact").join("llm");
@@ -404,7 +552,6 @@ fn run_model(kind: &str, shared: &str, prompt: &str, args: &[&str]) -> Result<(S
             }
         }
     }
-    let started = Instant::now();
     let mut cmd = Command::new("nice");
     cmd.args(["-n", "10", "llama-completion", "-m"])
         .arg(&model)
@@ -418,13 +565,61 @@ fn run_model(kind: &str, shared: &str, prompt: &str, args: &[&str]) -> Result<(S
     if !fresh {
         cmd.arg("--prompt-cache-ro");
     }
-    let out = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(|e| format!("can't start llama-completion: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        warn!("model: llama-completion failed ({}): {}", out.status, err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or(""));
-        return Err("the model didn't run".into());
+    Ok((cmd, fresh))
+}
+
+/// 20e-2: write `about` for `app` with the local model, handing each sentence to `put` as soon
+/// as it's written (typing starts at the first). Blocking. The characters handed over.
+pub fn write(about: &str, app: &str, put: &mut dyn FnMut(&str) -> Result<(), String>) -> Result<usize, String> {
+    use std::io::Read;
+    let started = Instant::now();
+    let (mut cmd, fresh) = llama("write", &write_prefix(), &write_prompt(about, app), &["--temp", "0.7", "-n", "140"])?;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("can't start llama-completion: {e}"))?;
+    let mut stdout = child.stdout.take().ok_or("no output")?;
+    let mut pieces = Pieces::default();
+    let (mut bytes, mut buf, mut given) = (Vec::new(), [0u8; 256], 0usize);
+    let mut first: Option<u128> = None;
+    let mut result = Ok(());
+    loop {
+        let n = match stdout.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        bytes.extend_from_slice(&buf[..n]);
+        // Only whole characters.
+        let valid = match std::str::from_utf8(&bytes) {
+            Ok(_) => bytes.len(),
+            Err(e) => e.valid_up_to(),
+        };
+        let text = String::from_utf8_lossy(&bytes[..valid]).into_owned();
+        bytes.drain(..valid);
+        for p in pieces.push(&text) {
+            first.get_or_insert(started.elapsed().as_millis());
+            given += p.chars().count();
+            if let Err(e) = put(&p) {
+                result = Err(e);
+                break;
+            }
+        }
+        if result.is_err() || pieces.full() {
+            break;
+        }
     }
-    Ok((String::from_utf8_lossy(&out.stdout).replace("[end of text]", ""), fresh, started.elapsed().as_millis()))
+    if result.is_ok() {
+        if let Some(p) = pieces.finish() {
+            given += p.chars().count();
+            result = put(&p);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    info!(
+        "model: wrote {given} characters for {about:?} in {} ms (first sentence after {} ms){}",
+        started.elapsed().as_millis(),
+        first.unwrap_or(0),
+        if fresh { " (prompt cache made)" } else { "" }
+    );
+    result.map(|_| given)
 }
 
 /// Ask the model what `text` means as steps (blocking: off the main thread; ~1.5–2.5 s here).
@@ -471,6 +666,10 @@ pub fn warm_up() {
             info!("model: making the talking prompt cache");
             let _ = talk("hello", &[], "");
         }
+        if cached("write", &write_prefix()) == Some(false) {
+            info!("model: making the writing prompt cache");
+            let _ = run_model("write", &write_prefix(), &write_prompt("hello", ""), &["-n", "1"]);
+        }
     });
 }
 
@@ -482,6 +681,39 @@ pub fn model_state() -> ModelState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The real model writing (`cargo test live_write -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn live_write() {
+        for about in ["something", "a short joke", "an email to Sam saying I'll be late on Friday"] {
+            let started = Instant::now();
+            let mut put = |p: &str| {
+                println!("  +{:>5} ms {p:?}", started.elapsed().as_millis());
+                Ok(())
+            };
+            println!("{about}: {:?}", write(about, "Text Editor", &mut put));
+        }
+    }
+
+    #[test]
+    fn writing() {
+        assert_eq!(write_request("a joke", "Text Editor"), "Write a joke (it goes into Text Editor)");
+        assert!(write_prompt("a joke", "").starts_with(&write_prefix()));
+        let mut p = Pieces::default();
+        assert_eq!(p.push("Sure, here's a short one:\n\"Why did"), Vec::<String>::new(), "the preface goes");
+        assert_eq!(p.push(" the cat sit? Because"), ["Why did the cat sit?"]);
+        assert_eq!(p.push(" it could.\"<|im_end|>junk"), Vec::<String>::new());
+        assert_eq!(p.finish().as_deref(), Some(" Because it could."));
+        assert_eq!(pieces_of("Dear Sam,\nThanks for the book. See you soon!"), ["Dear Sam,", "\nThanks for the book.", " See you soon!"]);
+        assert_eq!(pieces_of("Certainly! Roses are red."), ["Roses are red."], "a lone Certainly! goes");
+        let long = "Word word word. ".repeat(100);
+        assert!(pieces_of(&long).iter().map(|p| p.chars().count()).sum::<usize>() <= MAX_WRITING);
+        assert_eq!(pieces_of("Sure, here is a text for you: \"Hello there. Bye.\""), ["Hello there.", " Bye."], "a preface on the same line");
+        assert_eq!(pieces_of("Hi Sam.\n\nSee you. \n\n"), ["Hi Sam.", "\n\nSee you."], "no line ends at the end");
+        assert_eq!(pieces_of("Write a joke (it goes into Text Editor)\nWhy not?"), ["Why not?"], "the request said back");
+        assert_eq!(write_request("Something", ""), "Write a short, pleasant thought for the day");
+    }
 
     #[test]
     fn what_it_is_told() {

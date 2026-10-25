@@ -103,6 +103,36 @@ pub fn confirmed(answer: Answer) -> Option<bool> {
     }
 }
 
+/// 20e: terminals, by app id (lower case) or the words of their name.
+const TERMINALS: [&str; 18] = [
+    "foot", "kitty", "alacritty", "org.gnome.terminal", "gnome-terminal", "org.gnome.ptyxis", "ptyxis", "konsole", "org.kde.konsole", "xterm", "wezterm",
+    "org.wezfurlong.wezterm", "terminator", "tilix", "com.gexperts.tilix", "xfce4-terminal", "com.mitchellh.ghostty", "org.gnome.console",
+];
+
+/// 20e: whether a window is a terminal: its app id, its name, or its app's keywords say so.
+pub fn is_terminal(app_id: &str, name: &str, about: &str) -> bool {
+    let id = app_id.to_lowercase();
+    let words = format!("{} {}", name.to_lowercase(), about.to_lowercase());
+    TERMINALS.contains(&id.as_str()) || words.contains("terminal") || words.contains("command line")
+}
+
+/// 20e: keys that quit an app or delete for good.
+const DRASTIC_KEYS: [&str; 6] = ["ctrl+q", "ctrl+shift+q", "alt+f4", "ctrl+shift+w", "shift+delete", "shift+del"];
+
+/// 20e: why typing (`type_text`) or pressing keys (`press_keys`) into a window must ask first,
+/// or `None`: into a terminal it can run commands; some keys quit or delete for good. Asked
+/// like a Tier 2 step (only a click says yes).
+pub fn typing_asks(tool: &str, args: &Value, terminal: bool) -> Option<&'static str> {
+    if !matches!(tool, "type_text" | "write_text" | "press_keys") {
+        return None;
+    }
+    if terminal {
+        return Some("In a terminal, that can run commands.");
+    }
+    let keys = args.get("keys").and_then(Value::as_str).unwrap_or("").to_lowercase().replace(' ', "").replace("control", "ctrl");
+    keys.split(',').any(|k| DRASTIC_KEYS.contains(&k)).then_some("That can close the app, or delete for good.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +140,24 @@ mod tests {
 
     fn step(tool: &str, args: Value) -> Proposal {
         Proposal { tool: tool.into(), args, from_untrusted: false }
+    }
+
+    #[test]
+    fn typing() {
+        assert!(is_terminal("org.gnome.Ptyxis", "Terminal", ""));
+        assert!(is_terminal("foot", "", ""));
+        assert!(is_terminal("com.example.Thing", "Thing", "shell;prompt;command line"));
+        assert!(!is_terminal("org.gnome.TextEditor", "Text Editor", "text;editor;plain"));
+        assert!(!is_terminal("firefox", "Firefox", "internet;www;browser"));
+        let text = json!({"text": "ls"});
+        assert!(typing_asks("type_text", &text, true).is_some(), "into a terminal");
+        assert!(typing_asks("type_text", &text, false).is_none());
+        assert!(typing_asks("press_keys", &json!({"keys": "enter"}), true).is_some());
+        assert!(typing_asks("press_keys", &json!({"keys": "ctrl+t"}), false).is_none());
+        assert!(typing_asks("press_keys", &json!({"keys": "Control + Q"}), false).is_some());
+        assert!(typing_asks("press_keys", &json!({"keys": "ctrl+a, shift+delete"}), false).is_some());
+        assert!(typing_asks("set_volume", &json!({"percent": 3}), true).is_none());
+        assert!(typing_asks("write_text", &json!({"about": "a joke"}), true).is_some());
     }
 
     #[test]

@@ -497,9 +497,261 @@ fn place_clause(c: &str) -> Option<Step> {
 }
 
 /// One request, already split from the others.
+// ---- 20e: typing and keys in the app in front ----
+
+/// Apps "type … in …" may name (anything else after " in " is part of the text: "type see you
+/// in the morning").
+const TYPE_INTO: [&str; 22] = [
+    "text editor", "editor", "gedit", "notes", "terminal", "firefox", "browser", "chrome", "chromium", "files", "writer", "libreoffice", "libreoffice writer",
+    "code", "vs code", "visual studio code", "kate", "mousepad", "console", "ptyxis", "this window", "the app",
+];
+
+/// The shortcuts said in words, and their keys.
+const SHORTCUTS: [(&[&str], &str); 24] = [
+    (&["new tab", "open a new tab", "open new tab", "a new tab"], "ctrl+t"),
+    (&["close tab", "close this tab", "close the tab", "close the current tab"], "ctrl+w"),
+    (&["reopen tab", "reopen the tab", "reopen closed tab", "reopen the closed tab", "reopen the last tab", "undo close tab"], "ctrl+shift+t"),
+    (&["next tab", "go to the next tab", "the next tab"], "ctrl+tab"),
+    (&["previous tab", "go to the previous tab", "the previous tab", "last tab"], "ctrl+shift+tab"),
+    (&["new window", "open a new window", "a new window"], "ctrl+n"),
+    (&["save", "save it", "save this", "save that", "save the file", "save my work", "save the document", "save the page"], "ctrl+s"),
+    (&["save as", "save it as", "save this as"], "ctrl+shift+s"),
+    (&["select all", "select everything", "select all the text"], "ctrl+a"),
+    (&["copy", "copy it", "copy that", "copy this", "copy the selection"], "ctrl+c"),
+    (&["paste", "paste it", "paste that", "paste here", "paste it here"], "ctrl+v"),
+    (&["cut", "cut it", "cut that", "cut this"], "ctrl+x"),
+    (&["find in page", "find on this page", "find on page", "search this page", "search in this page", "search the page"], "ctrl+f"),
+    (&["reload", "refresh", "reload the page", "refresh the page", "reload page", "refresh page", "reload this page", "refresh this page"], "f5"),
+    (&["zoom in", "make the text bigger", "bigger text"], "ctrl+plus"),
+    (&["zoom out", "make the text smaller", "smaller text"], "ctrl+minus"),
+    (&["reset zoom", "actual size", "normal size"], "ctrl+0"),
+    (&["previous page", "go back a page", "back a page", "page back"], "alt+left"),
+    (&["next page", "go forward a page", "forward a page", "go forward"], "alt+right"),
+    (&["print", "print this", "print it", "print the page", "print the document"], "ctrl+p"),
+    (&["scroll down", "page down"], "page down"),
+    (&["scroll up", "page up"], "page up"),
+    (&["go to the top", "scroll to the top", "to the top"], "ctrl+home"),
+    (&["go to the bottom", "scroll to the bottom", "to the bottom"], "ctrl+end"),
+];
+
+/// `text`'s end, if it's " in <one of TYPE_INTO>" ("… in the text editor"): the text before
+/// it and the app.
+fn into_app(text: &str) -> (String, Option<String>) {
+    let lower = text.to_ascii_lowercase();
+    if let Some(i) = lower.rfind(" in ") {
+        let app = lower[i + 4..].trim().trim_end_matches('.').trim_start_matches("the ").trim().to_string();
+        if TYPE_INTO.contains(&app.as_str()) {
+            return (text[..i].trim().to_string(), Some(app));
+        }
+    }
+    (text.trim().to_string(), None)
+}
+
+/// 20e: "type Hello, World!", "type “ls -la” in the terminal", "write ‘Dear Sam’ in Text
+/// Editor", "type hello and press enter": as written (case and punctuation kept), so before
+/// `normalize`. 20e-2: "write" without quotes is for Siva to write ("write a joke", "write
+/// something", "draft an email to Sam about Friday"): `write_text`.
+fn typing(raw: &str) -> Option<Vec<Step>> {
+    let t = raw.trim();
+    let at = |s: &str, i: usize, p: &str| s.get(i..i + p.len()).is_some_and(|x| x.eq_ignore_ascii_case(p));
+    let mut start = 0;
+    for lead in ["hey siva, ", "hey siva ", "siva, ", "siva ", "please ", "can you ", "could you "] {
+        if at(t, start, lead) {
+            start += lead.len();
+        }
+    }
+    let verb = ["type out ", "type in ", "type ", "write down ", "write ", "compose ", "draft "].into_iter().find(|v| at(t, start, v))?;
+    let mut writing = !verb.starts_with("type") && verb != "write down ";
+    let mut rest = t[start + verb.len()..].trim();
+    // 20e-3: dictation: "write this message: I'll be late", "write the following …".
+    for lead in ["this message", "the message", "a message saying", "the following", "this text", "these words", "this", "the text"] {
+        if writing && at(rest, 0, lead) {
+            let after = rest[lead.len()..].trim_start_matches([':', ',', '.', ' ', '-']);
+            if !after.is_empty() && (lead != "this" || rest[lead.len()..].starts_with([':', ','])) {
+                (writing, rest) = (false, after);
+                break;
+            }
+        }
+    }
+    let open_quotes = ['"', '“', '\'', '‘'];
+    let (text, tail) = match rest.chars().next() {
+        Some(q) if open_quotes.contains(&q) => {
+            let inner = &rest[q.len_utf8()..];
+            let close = inner.rfind(['"', '”', '\'', '’'])?;
+            (inner[..close].to_string(), inner[close..].chars().skip(1).collect::<String>())
+        }
+        _ => {
+            let (text, enter) = enter_after(rest);
+            let (text, app) = into_app(&text);
+            if writing {
+                let about = text.trim_end_matches(['.', '!']).trim();
+                if about.is_empty() || about.chars().any(char::is_control) {
+                    return None;
+                }
+                let mut args = json!({"about": about});
+                if let Some(a) = app {
+                    args["window"] = json!(a);
+                }
+                let mut steps = vec![step("write_text", args.clone())];
+                if enter {
+                    let mut keys = json!({"keys": "enter"});
+                    if let Some(w) = args.get("window") {
+                        keys["window"] = w.clone();
+                    }
+                    steps.push(step("press_keys", keys));
+                }
+                return Some(steps);
+            }
+            // whisper ends what you said with a full stop; a full stop to type goes in quotes.
+            let text = text.strip_suffix('.').filter(|t| !t.contains('.')).map(str::to_string).unwrap_or(text);
+            return typed(text, app, enter);
+        }
+    };
+    let (tail, enter) = enter_after(&tail);
+    let (_, app) = into_app(&format!("x {}", tail.trim().trim_start_matches(',')));
+    typed(text, app, enter)
+}
+
+/// 20e-3b: a file name as said ("one plus dot txt file" → "oneplus.txt", "notes text file" →
+/// "notes.txt"); one already written ("let.txt") stays as it is. Said with "dot", the words
+/// before it are one name, joined.
+pub fn spoken_file_name(name: &str) -> String {
+    const EXT: [(&str, &str); 22] = [
+        ("txt", "txt"), ("text", "txt"), ("pdf", "pdf"), ("md", "md"), ("markdown", "md"), ("doc", "doc"), ("docx", "docx"), ("csv", "csv"), ("html", "html"),
+        ("htm", "html"), ("py", "py"), ("python", "py"), ("rs", "rs"), ("rust", "rs"), ("json", "json"), ("jpg", "jpg"), ("jpeg", "jpg"), ("png", "png"), ("sh", "sh"),
+        ("odt", "odt"), ("log", "log"), ("xml", "xml"),
+    ];
+    let ext = |w: &str| EXT.iter().find(|(said, _)| said.eq_ignore_ascii_case(w)).map(|(_, e)| *e);
+    let mut words: Vec<&str> = name.split_whitespace().collect();
+    // "… file", "… document": not part of the name.
+    while words.len() > 1 && ["file", "document"].iter().any(|w| words.last().is_some_and(|l| l.eq_ignore_ascii_case(w))) {
+        words.pop();
+    }
+    if let Some(i) = words.iter().rposition(|w| w.eq_ignore_ascii_case("dot")) {
+        if i > 0 && i + 2 == words.len() {
+            if let Some(e) = ext(words[i + 1]).map(str::to_string).or_else(|| Some(words[i + 1].to_lowercase())) {
+                return format!("{}.{e}", words[..i].concat());
+            }
+        }
+    }
+    // "notes text file" (the "file" gone): "notes text" → "notes.txt" only when it said "file".
+    if words.len() >= 2 && name.split_whitespace().count() > words.len() && !words.last().is_some_and(|w| w.contains('.')) {
+        if let Some(e) = ext(words[words.len() - 1]) {
+            return format!("{}.{e}", words[..words.len() - 1].join(" "));
+        }
+    }
+    words.join(" ")
+}
+
+/// 20e-3: "save it as notes.txt", "save the text editor with name, let.txt", "save this
+/// file named Shopping List": as written (the dots of the name kept), so before `normalize`.
+fn save_as(raw: &str) -> Option<Step> {
+    let t = raw.trim().trim_end_matches(['.', '!']).trim();
+    let lower = t.to_ascii_lowercase();
+    let lower = lower.trim_start_matches("please ").trim_start_matches("siva ").trim_start_matches("siva, ");
+    let skip = t.len() - lower.len();
+    if !lower.starts_with("save ") {
+        return None;
+    }
+    const MARKS: [&str; 10] = [" as ", " with the file name ", " with file name ", " with the name ", " with name ", " under the name ", " named ", " called ", " with the name,", " with name,"];
+    let (at, mark) = MARKS.iter().filter_map(|m| lower.find(m).map(|i| (i, *m))).min_by_key(|(i, _)| *i)?;
+    let name = t[skip + at + mark.len()..].trim().trim_matches([',', ':', '"', '“', '”', '\'', ' ']).trim();
+    if name.is_empty() || name.chars().count() > 100 || name.contains('/') || name.chars().any(char::is_control) {
+        return None;
+    }
+    // What's between "save" and the name may say which window ("save the text editor as …").
+    let what = lower[5..at].trim().trim_start_matches("the ").to_string();
+    let name = spoken_file_name(name);
+    if name.is_empty() {
+        return None;
+    }
+    let mut args = json!({"name": name});
+    if TYPE_INTO.contains(&what.as_str()) {
+        args["window"] = json!(what);
+    }
+    Some(step("save_as", args))
+}
+
+/// " and press enter" at the end of `text`: without it, and whether it was there.
+fn enter_after(text: &str) -> (String, bool) {
+    let lower = text.trim_end_matches('.').to_ascii_lowercase();
+    for tail in [" and press enter", " then press enter", ", then press enter", ", and press enter", " and hit enter", " and press return", ", press enter"] {
+        if lower.ends_with(tail) {
+            return (text[..lower.len() - tail.len()].to_string(), true);
+        }
+    }
+    (text.to_string(), false)
+}
+
+fn typed(text: String, app: Option<String>, enter: bool) -> Option<Vec<Step>> {
+    if text.trim().is_empty() || text.chars().any(char::is_control) {
+        return None;
+    }
+    let with = |mut args: Value| {
+        if let Some(a) = &app {
+            args["window"] = json!(a);
+        }
+        args
+    };
+    let mut steps = vec![step("type_text", with(json!({"text": text})))];
+    if enter {
+        steps.push(step("press_keys", with(json!({"keys": "enter"}))));
+    }
+    Some(steps)
+}
+
+/// 20e: a shortcut in words ("new tab", "save it in text editor") or keys ("press ctrl+t",
+/// "hit enter", "press control shift t").
+fn keys_clause(c: &str) -> Option<Step> {
+    let (phrase, app) = match c.rfind(" in ") {
+        Some(i) if c[i + 4..].split_whitespace().count() <= 3 => (&c[..i], Some(c[i + 4..].trim_start_matches("the ").to_string())),
+        _ => (c, None),
+    };
+    let with = |keys: &str, app: Option<String>| {
+        let mut args = json!({"keys": keys});
+        if let Some(a) = app {
+            args["window"] = json!(a);
+        }
+        step("press_keys", args)
+    };
+    for (said, keys) in SHORTCUTS {
+        if said.contains(&phrase) {
+            return Some(with(keys, app));
+        }
+        if said.contains(&c) {
+            return Some(with(keys, None));
+        }
+    }
+    let rest = ["press ", "hit ", "push "].iter().find_map(|v| c.strip_prefix(v))?;
+    let (rest, app) = match rest.rfind(" in ") {
+        Some(i) => (&rest[..i], Some(rest[i + 4..].trim_start_matches("the ").to_string())),
+        None => (rest, None),
+    };
+    let words: Vec<&str> = rest.split_whitespace().filter(|w| !["the", "key", "keys", "button", "a"].contains(w)).collect();
+    if words.is_empty() || ["play", "pause"].contains(&words[0]) {
+        return None;
+    }
+    let keys = if rest.contains('+') {
+        words.concat()
+    } else {
+        const MODS: [&str; 7] = ["ctrl", "control", "shift", "alt", "super", "windows", "command"];
+        let n = words.iter().take_while(|w| MODS.contains(w)).count();
+        let key = words[n..].join(" ");
+        if key.is_empty() {
+            return None;
+        }
+        words[..n].iter().map(|m| if *m == "control" { "ctrl" } else { m }).chain(std::iter::once(key.as_str())).collect::<Vec<_>>().join("+")
+    };
+    Some(with(&keys, app))
+}
+
 fn clause(c: &str) -> Option<Vec<Step>> {
     let w: Vec<&str> = c.split_whitespace().collect();
     let first = *w.first()?;
+    // 20e: shortcuts in the app in front ("close tab" isn't closing a window).
+    if let Some(s) = keys_clause(c) {
+        return Some(vec![s]);
+    }
     // 20b: the rest of the desktop, before the rules below take its words ("open bluetooth
     // settings" isn't Bluetooth on, "move the dock to the left" isn't a window).
     if let Some(s) = desktop_clause(c, &w) {
@@ -798,6 +1050,18 @@ pub fn describe(s: &Step) -> String {
         "news" => format!("Get the news on {}", text("topic")),
         "look_up" => format!("Look up “{}”", text("query")),
         "set_place" => format!("Remember your town: {}", title(text("place"))),
+        "type_text" | "write_text" | "press_keys" | "save_as" => {
+            let what = match s.tool {
+                "type_text" => format!("Type “{}”", text("text")),
+                "write_text" => format!("Write {}", text("about")),
+                "save_as" => format!("Save as “{}”", text("name")),
+                _ => format!("Press {}", text("keys")),
+            };
+            match s.args.get("window").and_then(Value::as_str) {
+                Some(w) => format!("{what} in {}", title(w.to_string())),
+                None => what,
+            }
+        }
         "search_web" if text("site").is_empty() => format!("Search the web for {}", text("query")),
         "search_web" => format!("Search {} for {}", title(text("site")), text("query")),
         "move_to_desktop" => format!("Move {} to desktop {}", title(text("window")), int("number")),
@@ -937,6 +1201,41 @@ pub fn parse(text: &str) -> Parsed {
     if let Some(answer) = small_talk(said.strip_suffix(" siva").unwrap_or(&said)) {
         return Parsed::Talk(answer);
     }
+    // 20e-3: "… and save it (as notes.txt)": saving is its own step, after the rest.
+    let lower = text.to_ascii_lowercase();
+    for join in [" and then save ", ", and save ", " and save ", ", then save ", " then save ", ", save "] {
+        if let Some(i) = lower.find(join) {
+            let tail = &text[i + join.find("save").unwrap_or(0)..];
+            let saving = save_as(tail).map(|s| vec![s]).or_else(|| match parse(tail) {
+                Parsed::Steps(s) if s.iter().all(|s| s.tool == "press_keys") => Some(s),
+                _ => None,
+            });
+            if let (Parsed::Steps(mut first), Some(more)) = (parse(&text[..i]), saving) {
+                first.extend(more);
+                resolve_it(&mut first);
+                return Parsed::Steps(first);
+            }
+        }
+    }
+    if let Some(s) = save_as(text) {
+        let mut steps = vec![s];
+        resolve_it(&mut steps);
+        return Parsed::Steps(steps);
+    }
+    // 20e: what to type, as written; also after something else ("open text editor and type
+    // Dear Sam").
+    if let Some(steps) = typing(text) {
+        return Parsed::Steps(steps);
+    }
+    for join in [" and and type ", " and and write ", " and then type ", ", then type ", " then type ", " and type ", ", type ", " and then write ", " then write ", " and write ", ", write "] {
+        if let Some(i) = lower.find(join) {
+            if let (Parsed::Steps(mut first), Some(more)) = (parse(&text[..i]), typing(&text[i + join.find("type").or(join.find("write")).unwrap_or(0)..])) {
+                first.extend(more);
+                resolve_it(&mut first);
+                return Parsed::Steps(first);
+            }
+        }
+    }
     let mut steps = Vec::new();
     for part in split(&c) {
         match clause(&part) {
@@ -999,6 +1298,13 @@ pub fn is_remark(text: &str) -> bool {
 pub fn resolve_it(steps: &mut [Step]) {
     let mut last: Option<String> = None;
     for s in steps.iter_mut() {
+        // 20e-2: typing after "open text editor" (or "bring up firefox") goes there, not to
+        // whatever was in front before it.
+        if matches!(s.tool, "type_text" | "write_text" | "press_keys" | "save_as") && s.args.get("window").is_none() {
+            if let Some(name) = &last {
+                s.args["window"] = json!(name);
+            }
+        }
         if let Some(name) = s.args.get("app").and_then(Value::as_str) {
             last = Some(name.to_string());
         }
@@ -1159,6 +1465,69 @@ mod tests {
             let line = describe(&step(t.name, json!({})));
             assert_ne!(line, t.name.replace('_', " "), "{}", t.name);
         }
+    }
+
+    #[test]
+    fn typing_and_keys() {
+        let steps = |t: &str| match parse(t) {
+            Parsed::Steps(s) => s.iter().map(|s| format!("{} {}", s.tool, s.args)).collect::<Vec<_>>(),
+            other => panic!("{t:?}: {other:?}"),
+        };
+        assert_eq!(steps("type Hello, World!"), [r#"type_text {"text":"Hello, World!"}"#]);
+        assert_eq!(steps("Type hello world."), [r#"type_text {"text":"hello world"}"#], "whisper's full stop");
+        assert_eq!(steps("type \"Done.\""), [r#"type_text {"text":"Done."}"#], "quoted: as it is");
+        assert_eq!(steps("type see you in the morning"), [r#"type_text {"text":"see you in the morning"}"#]);
+        assert_eq!(steps("type “ls -la” in the terminal"), [r#"type_text {"text":"ls -la","window":"terminal"}"#]);
+        assert_eq!(steps("write ‘Dear Sam’ in Text Editor"), [r#"type_text {"text":"Dear Sam","window":"text editor"}"#], "quoted: as it is");
+        // 20e-2: Siva writes it.
+        assert_eq!(steps("write a joke in the text editor"), [r#"write_text {"about":"a joke","window":"text editor"}"#]);
+        assert_eq!(steps("Write today's joke."), [r#"write_text {"about":"today's joke"}"#]);
+        assert_eq!(steps("Open text editor and write something"), [r#"open_app {"app":"text editor"}"#, r#"write_text {"about":"something","window":"text editor"}"#], "into the app just opened");
+        assert_eq!(steps("open text editor and and write a poem about rain"), [r#"open_app {"app":"text editor"}"#, r#"write_text {"about":"a poem about rain","window":"text editor"}"#]);
+        assert_eq!(steps("draft an email to Sam about Friday"), [r#"write_text {"about":"an email to Sam about Friday"}"#]);
+        assert_eq!(steps("open firefox and new tab"), [r#"open_app {"app":"firefox"}"#, r#"press_keys {"keys":"ctrl+t","window":"firefox"}"#]);
+        assert_eq!(steps("Siva, type cats and press enter"), [r#"type_text {"text":"cats"}"#, r#"press_keys {"keys":"enter"}"#]);
+        assert_eq!(steps("open text editor and type Dear Sam,"), [r#"open_app {"app":"text editor"}"#, r#"type_text {"text":"Dear Sam,","window":"text editor"}"#]);
+
+        assert_eq!(steps("new tab"), [r#"press_keys {"keys":"ctrl+t"}"#]);
+        assert_eq!(steps("close this tab"), [r#"press_keys {"keys":"ctrl+w"}"#], "not closing the window");
+        assert_eq!(steps("save it in text editor"), [r#"press_keys {"keys":"ctrl+s","window":"text editor"}"#]);
+        assert_eq!(steps("refresh the page"), [r#"press_keys {"keys":"f5"}"#]);
+        assert_eq!(steps("press ctrl+shift+t"), [r#"press_keys {"keys":"ctrl+shift+t"}"#]);
+        assert_eq!(steps("press control shift t"), [r#"press_keys {"keys":"ctrl+shift+t"}"#]);
+        assert_eq!(steps("hit the enter key"), [r#"press_keys {"keys":"enter"}"#]);
+        assert_eq!(steps("press page down in firefox"), [r#"press_keys {"keys":"page down","window":"firefox"}"#]);
+        assert_eq!(steps("zoom in"), [r#"press_keys {"keys":"ctrl+plus"}"#]);
+        // 20e-3b: names as said.
+        assert_eq!(spoken_file_name("one plus dot txt file"), "oneplus.txt");
+        assert_eq!(spoken_file_name("Shopping List dot text"), "ShoppingList.txt");
+        assert_eq!(spoken_file_name("notes text file"), "notes.txt");
+        assert_eq!(spoken_file_name("report dot pdf"), "report.pdf");
+        assert_eq!(spoken_file_name("let.txt"), "let.txt");
+        assert_eq!(spoken_file_name("Shopping List"), "Shopping List");
+        assert_eq!(spoken_file_name("my text"), "my text", "\"text\" alone isn't an extension");
+        assert_eq!(steps("save it as one plus dot txt file"), [r#"save_as {"name":"oneplus.txt"}"#]);
+        assert_eq!(
+            steps("Open text editor and write one plus node board, then save it as one plus dot txt file"),
+            [r#"open_app {"app":"text editor"}"#, r#"write_text {"about":"one plus node board","window":"text editor"}"#, r#"save_as {"name":"oneplus.txt","window":"text editor"}"#]
+        );
+        // 20e-3: saving with a name, dictation.
+        assert_eq!(steps("Save the text editor with name, let.txt."), [r#"save_as {"name":"let.txt","window":"text editor"}"#]);
+        assert_eq!(steps("save it as Shopping List"), [r#"save_as {"name":"Shopping List"}"#]);
+        assert_eq!(
+            steps("Open text editor and write a short note to Sam and save it as sam.txt"),
+            [r#"open_app {"app":"text editor"}"#, r#"write_text {"about":"a short note to Sam","window":"text editor"}"#, r#"save_as {"name":"sam.txt","window":"text editor"}"#]
+        );
+        assert_eq!(steps("write a joke in text editor and save it"), [r#"write_text {"about":"a joke","window":"text editor"}"#, r#"press_keys {"keys":"ctrl+s","window":"text editor"}"#]);
+        assert_eq!(steps("Open text editor and write this message. I will be late today"), [r#"open_app {"app":"text editor"}"#, r#"type_text {"text":"I will be late today","window":"text editor"}"#]);
+        assert_eq!(steps("write the message, I'll be late today."), [r#"type_text {"text":"I'll be late today"}"#]);
+        assert_eq!(steps("write down milk, eggs and bread"), [r#"type_text {"text":"milk, eggs and bread"}"#]);
+        assert_eq!(steps("write this: see you soon"), [r#"type_text {"text":"see you soon"}"#]);
+        assert_eq!(steps("write this as a poem"), [r#"write_text {"about":"this as a poem"}"#], "not dictation");
+        // Still what they were.
+        assert_eq!(steps("go back"), [r#"focus_window {"window":"other one"}"#]);
+        assert_eq!(steps("open firefox and then type cats"), [r#"open_app {"app":"firefox"}"#, r#"type_text {"text":"cats","window":"firefox"}"#]);
+        assert_eq!(steps("next"), [r#"media {"action":"next"}"#]);
     }
 
     #[test]

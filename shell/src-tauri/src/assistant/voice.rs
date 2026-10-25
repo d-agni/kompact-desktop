@@ -435,7 +435,9 @@ pub fn transcribe(pcm: &[u8]) -> Result<Option<String>, String> {
         .args(["-n", "10", "whisper-cli", "-m"])
         .arg(&model)
         // small.en: 6 threads (2.7 → 2.4 s for a 4 s clip here; it runs briefly, at nice 10).
-        .args(["-t", if name == "small.en" { "6" } else { THREADS }, "-l", "en", "-np", "-nt", "-otxt", "-ac", &audio_ctx(ms).to_string(), "--prompt", &prompt(), "-f", "-"])
+        // 20e-2: greedy, no fallback: beam search cost 0.25 s, and a fallback decodes it all
+        // again (a 6.5 s clip once took 9 s).
+        .args(["-t", if name == "small.en" { "6" } else { THREADS }, "-bs", "1", "-bo", "1", "-nf", "-l", "en", "-np", "-nt", "-otxt", "-ac", &audio_ctx(ms).to_string(), "--prompt", &prompt(), "-f", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

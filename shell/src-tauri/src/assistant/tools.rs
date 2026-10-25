@@ -120,6 +120,12 @@ pub const TOOLS: &[Tool] = &[
     Tool { name: "show_desktop", about: "Move every window out of the way to show the desktop, or bring them back.", tier: Tier::Reversible, undo: true, params: &[] },
     Tool { name: "dock", about: "Change the dock: where it is, when it hides, how big it is.", tier: Tier::Reversible, undo: true, params: &[opt("position", Arg::OneOf(&["left", "bottom", "right"]), ""), opt("hide", Arg::OneOf(&["never", "smart", "always"]), "smart: when a window is maximized"), opt("size", Arg::OneOf(&["small", "medium", "large"]), "")] },
     Tool { name: "set_place", about: "Remember the user's town, for the weather.", tier: Tier::Reversible, undo: true, params: &[p("place", Arg::Text { max: 80 }, "a town")] },
+    // 20e: in the app in front (or the window named), through kompact's keyboard. No Undo;
+    // into a terminal, or keys that quit or delete for good, it asks first (`policy::typing_asks`).
+    Tool { name: "type_text", about: "Type text into the app in front, or a window.", tier: Tier::Reversible, undo: false, params: &[p("text", Arg::Text { max: 500 }, "exactly what to type"), opt("window", WINDOW, "the app in front if left out")] },
+    Tool { name: "write_text", about: "Write something new (a joke, a note, an email, a poem) and type it into the app in front, or a window.", tier: Tier::Reversible, undo: false, params: &[p("about", Arg::Text { max: 300 }, "what to write, e.g. a short joke"), opt("window", WINDOW, "the app in front if left out")] },
+    Tool { name: "save_as", about: "Save the file in the app in front (or a window) under a name: Save As, the name, Enter.", tier: Tier::Reversible, undo: false, params: &[p("name", Arg::Text { max: 100 }, "the file name, e.g. notes.txt"), opt("window", WINDOW, "the app in front if left out")] },
+    Tool { name: "press_keys", about: "Press keys in the app in front, or a window: \"ctrl+t\" a new tab, \"ctrl+s\" save, \"enter\".", tier: Tier::Reversible, undo: false, params: &[p("keys", Arg::Text { max: 60 }, "like ctrl+shift+t; several with commas"), opt("window", WINDOW, "the app in front if left out")] },
     Tool { name: "desktop_setting", about: "Turn a desktop setting on or off.", tier: Tier::Reversible, undo: true, params: &[p("setting", Arg::OneOf(DESKTOP_SETTINGS), ""), p("on", ON, "")] },
     // ---- Tier 2: consequential, asks every time ----
     Tool { name: "close_window", about: "Close a window. Its app may lose unsaved work.", tier: Tier::Consequential, undo: false, params: &[p("window", WINDOW, "its title or app")] },

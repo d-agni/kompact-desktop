@@ -34,6 +34,10 @@
 //! keys would); 20b: `send <id> <1-9>` (to another desktop) and `show-desktop`. The shell asks `switcher open` (the dock's button), `switcher select <id>` (the pointer
 //! is on a card), `switcher pick <id>` (clicked) and `switcher cancel`.
 //!
+//! 20e (`typing.rs`): `type <req> <id> <hex>` (the text, UTF-8 as hex) and `press <req> <id>
+//! <keys>` ("ctrl+t", "ctrl+a, delete"): Siva types into a window or presses its keys; answered
+//! with `{"type":"typed","req":…,"ok":…,"missing":"…","why":"…"}`.
+//!
 //! Encoding and parsing are pure and tested here; the socket work is non-blocking and runs from
 //! a 50 ms timer in `state.rs`, so a slow or dead shell never stalls the compositor (a client
 //! that can't take a write is dropped).
@@ -122,6 +126,10 @@ pub enum Request {
     Send { id: u64, workspace: usize },
     /// 20b: `show-desktop`: every window out of the way, or back (as the Show Desktop key).
     ShowDesktop,
+    /// 20e: `type <req> <id> <hex>`: type the text into the window.
+    Type { req: u64, id: u64, text: String },
+    /// 20e: `press <req> <id> <keys>`: press key combinations in the window.
+    Press { req: u64, id: u64, keys: String },
 }
 
 /// 19c: where `place` puts a window.
@@ -315,6 +323,20 @@ pub fn parse_request(line: &str) -> Option<Request> {
     }
     if let Some(rest) = trimmed.strip_prefix("keep-awake ") {
         return parse_keep_awake(rest);
+    }
+    // 20e: `press`'s keys may have spaces ("page down").
+    for (cmd, typing) in [("type ", true), ("press ", false)] {
+        if let Some(rest) = trimmed.strip_prefix(cmd) {
+            let mut parts = rest.splitn(3, ' ');
+            let req: u64 = parts.next()?.parse().ok()?;
+            let id: u64 = parts.next()?.parse().ok()?;
+            let arg = parts.next()?.trim();
+            return if typing {
+                crate::typing::from_hex(arg).map(|text| Request::Type { req, id, text })
+            } else {
+                (!arg.is_empty() && arg.len() <= 200).then(|| Request::Press { req, id, keys: arg.to_string() })
+            };
+        }
     }
     if let Some(rest) = trimmed.strip_prefix("set-path ") {
         let (key, path) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -780,6 +802,13 @@ mod tests {
         assert_eq!(parse_request("send 4 10"), None);
         assert_eq!(parse_request("send four 2"), None);
         assert_eq!(parse_request("show-desktop"), Some(Request::ShowDesktop));
+        // 20e
+        assert_eq!(parse_request("type 7 3 6869"), Some(Request::Type { req: 7, id: 3, text: "hi".into() }));
+        assert_eq!(parse_request("type 7 3 zz"), None);
+        assert_eq!(parse_request("type 7 3"), None);
+        assert_eq!(parse_request("press 8 3 ctrl+a, page down"), Some(Request::Press { req: 8, id: 3, keys: "ctrl+a, page down".into() }));
+        assert_eq!(parse_request("press 8 x ctrl+t"), None);
+        assert_eq!(parse_request("press 8 3"), None);
         assert_eq!(parse_request("place 4 restore"), Some(Request::Place { id: 4, to: PlaceTo::Restore }));
         assert_eq!(parse_request("place 4 sideways"), None);
         assert_eq!(parse_request("place left"), None);
