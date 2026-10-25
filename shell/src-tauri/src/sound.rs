@@ -52,6 +52,59 @@ pub fn nodes(dump: &Value) -> Vec<Node> {
     out
 }
 
+/// The `default` metadata's value for `key` (a node name), from a `pw-dump`.
+pub fn default_name<'a>(dump: &'a Value, key: &str) -> Option<&'a str> {
+    dump.as_array()?
+        .iter()
+        .filter(|o| o["type"] == "PipeWire:Interface:Metadata" && o["props"]["metadata.name"] == "default")
+        .flat_map(|o| o["metadata"].as_array().into_iter().flatten())
+        .find(|m| m["subject"] == 0 && m["key"] == key)?["value"]["name"]
+        .as_str()
+}
+
+/// Whether a sound card's input has nothing plugged in: every jack (`EnumRoute`, direction
+/// Input) for its part of the card says `available: no`. Bluetooth and USB inputs have no jacks.
+pub fn unplugged(dump: &Value, node_id: u32) -> bool {
+    let objects = dump.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let Some(node) = objects.iter().find(|o| o["id"] == node_id) else { return false };
+    let props = &node["info"]["props"];
+    let (Some(device), Some(part)) = (props["device.id"].as_u64(), props["card.profile.device"].as_u64()) else { return false };
+    let Some(device) = objects.iter().find(|o| o["id"] == device && o["type"] == "PipeWire:Interface:Device") else { return false };
+    let jacks: Vec<&Value> = device["info"]["params"]["EnumRoute"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["direction"] == "Input" && r["devices"].as_array().is_some_and(|d| d.iter().any(|x| x.as_u64() == Some(part))))
+        .collect();
+    !jacks.is_empty() && jacks.iter().all(|r| r["available"] == "no")
+}
+
+/// 19d: the microphone to record from: the one chosen (Settings → Sound), else the current
+/// default if it really is a microphone, else a wired one, else any; never an output's monitor
+/// (WirePlumber falls back to one: found 2026-10-22, the default source was `bluez_output…`,
+/// silent), and never a sound card's input with nothing plugged in (found the same day: the
+/// "chosen" analog input had no jack in, peak 25; the microphone was the Bluetooth speaker's).
+pub fn microphone(dump: &Value) -> Option<Node> {
+    let inputs: Vec<Node> = nodes(dump).into_iter().filter(|n| !n.output && !unplugged(dump, n.id)).collect();
+    let named = |key| default_name(dump, key).and_then(|name| inputs.iter().find(|n| n.name == name));
+    named("default.configured.audio.source")
+        .or_else(|| named("default.audio.source"))
+        .or_else(|| inputs.iter().find(|n| n.name.starts_with("alsa_input")))
+        .or_else(|| inputs.first())
+        .cloned()
+}
+
+/// 19g: PipeWire's state now.
+pub fn dump_now() -> Result<Value, String> {
+    serde_json::from_str(&run(&["pw-dump", "-N"])?).map_err(|e| format!("pw-dump: {e}"))
+}
+
+/// 19d: `microphone` now.
+pub fn microphone_now() -> Result<Option<Node>, String> {
+    let dump: Value = serde_json::from_str(&run(&["pw-dump", "-N"])?).map_err(|e| format!("pw-dump: {e}"))?;
+    Ok(microphone(&dump))
+}
+
 /// 12d: the apps recording now (running `Stream/Input/Audio` nodes), for the menu bar's orange
 /// microphone dot. Peak meters and monitors of outputs aren't microphones; `stream.monitor` ones
 /// are left out.
@@ -444,5 +497,54 @@ mod tests {
         assert_eq!(stepped(1.0, true), 1.0);
         assert_eq!(stepped(0.97, true), 1.0);
         assert_eq!([waves(0.5, true), waves(0.0, false), waves(0.2, false), waves(0.5, false), waves(0.9, false)], [0, 0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn choosing_the_microphone() {
+        let node = |id: u32, name: &str, class: &str| json!({"id": id, "type": "PipeWire:Interface:Node", "info": {"props": {"node.name": name, "media.class": class, "node.description": name}}});
+        let meta = |pairs: &[(&str, &str)]| {
+            json!({"id": 41, "type": "PipeWire:Interface:Metadata", "props": {"metadata.name": "default"},
+                "metadata": pairs.iter().map(|(k, v)| json!({"subject": 0, "key": k, "type": "Spa:String:JSON", "value": {"name": v}})).collect::<Vec<_>>()})
+        };
+        let devices = [
+            node(53, "alsa_input.pci-0000_0c_00.4.analog-stereo", "Audio/Source"),
+            node(66, "bluez_input.41:42", "Audio/Source"),
+            node(69, "bluez_output.41:42", "Audio/Sink"),
+        ];
+        let with = |m: Value| Value::Array(devices.iter().cloned().chain([m]).collect());
+        let pick = |m: Value| microphone(&with(m)).map(|n| n.id);
+        // What this PC had: chosen the analog one, current default a speaker's monitor.
+        assert_eq!(pick(meta(&[("default.configured.audio.source", "alsa_input.pci-0000_0c_00.4.analog-stereo"), ("default.audio.source", "bluez_output.41:42")])), Some(53));
+        assert_eq!(pick(meta(&[("default.configured.audio.source", "bluez_input.41:42")])), Some(66), "the one chosen");
+        assert_eq!(pick(meta(&[("default.audio.source", "bluez_input.41:42")])), Some(66), "nothing chosen: the current one, if a microphone");
+        assert_eq!(pick(meta(&[("default.audio.source", "bluez_output.41:42")])), Some(53), "never a monitor: a wired one");
+        assert_eq!(pick(meta(&[("default.configured.audio.source", "gone.usb-mic")])), Some(53), "the chosen one unplugged");
+        assert_eq!(microphone(&json!([node(69, "bluez_output.41:42", "Audio/Sink")])), None);
+
+        // What this PC had next: the analog card chosen but no jack plugged in, so the Bluetooth
+        // speaker's microphone it is.
+        let card = |front: &str| {
+            let jack = |name: &str, available: &str| json!({"name": name, "direction": "Input", "available": available, "devices": [0]});
+            json!({"id": 49, "type": "PipeWire:Interface:Device", "info": {"props": {"device.api": "alsa"}, "params": {"EnumRoute": [
+                jack("analog-input-front-mic", front), jack("analog-input-rear-mic", "no"), jack("analog-input-linein", "no"),
+                {"name": "analog-output-lineout", "direction": "Output", "available": "yes", "devices": [1]}]}}})
+        };
+        let analog = json!({"id": 57, "type": "PipeWire:Interface:Node", "info": {"props": {"node.name": "alsa_input.analog-stereo", "media.class": "Audio/Source", "device.id": 49, "card.profile.device": 0}}});
+        let chosen = meta(&[("default.configured.audio.source", "alsa_input.analog-stereo"), ("default.audio.source", "bluez_output.41:42")]);
+        let pc = |front: &str| json!([card(front), analog, devices[1], devices[2], chosen]);
+        assert!(unplugged(&pc("no"), 57));
+        assert_eq!(microphone(&pc("no")).map(|n| n.id), Some(66), "nothing in the jacks: the Bluetooth one");
+        assert!(!unplugged(&pc("yes"), 57));
+        assert_eq!(microphone(&pc("yes")).map(|n| n.id), Some(57), "a microphone plugged in front: the chosen one");
+        assert!(!unplugged(&pc("no"), 66), "Bluetooth has no jacks");
+    }
+
+    /// `cargo test microphone_live -- --ignored --nocapture`: the one Siva would record from now.
+    #[test]
+    #[ignore]
+    fn microphone_live() {
+        let mic = microphone_now().unwrap().expect("a microphone");
+        println!("microphone: {} ({})", mic.label, mic.name);
+        assert!(!mic.output);
     }
 }

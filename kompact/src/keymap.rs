@@ -64,6 +64,8 @@ pub enum Action {
     MicMute,
     /// 12f: the next keyboard layout (does nothing, and the key goes to the app, with one).
     NextLayout,
+    /// 19d-2: the shell's assistant listens (as a click on its menu-bar item; again: done).
+    Assistant,
 }
 
 /// Every action, in the order the settings app lists them.
@@ -91,6 +93,7 @@ pub const ACTIONS: &[Action] = &[
     Action::VolumeMute,
     Action::MicMute,
     Action::Spotlight,
+    Action::Assistant,
     Action::NextLayout,
     Action::Terminal,
     Action::Files,
@@ -146,6 +149,7 @@ impl Action {
             Action::VolumeMute => "sound.mute",
             Action::MicMute => "sound.mic-mute",
             Action::NextLayout => "input.next-layout",
+            Action::Assistant => "assistant",
         }
     }
 
@@ -185,6 +189,7 @@ impl Action {
             Action::VolumeMute => "Mute or unmute the sound",
             Action::MicMute => "Mute or unmute the microphone",
             Action::NextLayout => "Next keyboard layout",
+            Action::Assistant => "Talk to Siva, the assistant",
         }
     }
 
@@ -196,7 +201,7 @@ impl Action {
             ShowWorkspace | SendToWorkspace | PrevWorkspace | NextWorkspace | Overview => Group::Workspaces,
             ShotAll | ShotPointerOutput | ShotRegion => Group::Screenshots,
             VolumeUp | VolumeDown | VolumeMute | MicMute => Group::Sound,
-            Spotlight | NextLayout | Terminal | Files | Lock | Quit | FocusFollowsMouse | DebugOverlay => Group::System,
+            Spotlight | Assistant | NextLayout | Terminal | Files | Lock | Quit | FocusFollowsMouse | DebugOverlay => Group::System,
         }
     }
 
@@ -437,6 +442,7 @@ impl Preset {
                 (VolumeMute, "XF86AudioMute"),
                 (MicMute, "XF86AudioMicMute"),
                 (NextLayout, "Ctrl+Alt+space"),
+                (Assistant, "Ctrl+Super+V"),
                 (FocusFollowsMouse, "Super+M"),
                 (DebugOverlay, "Super+D"),
             ],
@@ -469,6 +475,7 @@ impl Preset {
                 (VolumeMute, "XF86AudioMute"),
                 (MicMute, "XF86AudioMicMute"),
                 (NextLayout, "Ctrl+space"),
+                (Assistant, "Ctrl+Super+V"),
                 (DebugOverlay, "Ctrl+Alt+Super+D"),
             ],
             Preset::Windows => &[
@@ -499,6 +506,7 @@ impl Preset {
                 (VolumeMute, "XF86AudioMute"),
                 (MicMute, "XF86AudioMicMute"),
                 (NextLayout, "Super+space"),
+                (Assistant, "Ctrl+Super+V"),
                 (DebugOverlay, "Ctrl+Alt+Super+D"),
             ],
         }
@@ -950,6 +958,18 @@ mod tests {
             assert_eq!(map.lookup(&press(RAISE, "")), Some((Action::VolumeUp, None)), "{p:?}");
             assert_eq!(map.lookup(&press(MUTE, "")), Some((Action::VolumeMute, None)), "{p:?}");
         }
+    }
+
+    #[test]
+    fn the_assistant_key() {
+        // 19d-2: Ctrl+Super+V in every preset (the clash test below checks it's free).
+        const V: u32 = 0x76;
+        for &p in PRESETS {
+            let map = Keymap::new(p);
+            assert_eq!(map.combos(Action::Assistant), parse_combos("Ctrl+Super+V").unwrap(), "{p:?}");
+            assert_eq!(map.lookup(&press(V, "cw")), Some((Action::Assistant, None)), "{p:?}");
+        }
+        assert_eq!(Action::from_id("assistant"), Some(Action::Assistant));
     }
 
     #[test]

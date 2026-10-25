@@ -30,8 +30,13 @@
 //! 16b/16c, the window switcher (`switcher.rs`): kompact sends `{"type":"switcher","open":true,
 //! "sticky":false,"windows":[3,5,1],"selected":1}` (window ids in the order shown) when it
 //! appears and whenever the list or selection changes, and `{"type":"switcher","open":false}` when
-//! it ends. The shell asks `switcher open` (the dock's button), `switcher select <id>` (the pointer
+//! it ends. 19c: `place <id> left|right|fill|restore` (Siva puts a window somewhere, as the snap
+//! keys would); 20b: `send <id> <1-9>` (to another desktop) and `show-desktop`. The shell asks `switcher open` (the dock's button), `switcher select <id>` (the pointer
 //! is on a card), `switcher pick <id>` (clicked) and `switcher cancel`.
+//!
+//! 20e (`typing.rs`): `type <req> <id> <hex>` (the text, UTF-8 as hex) and `press <req> <id>
+//! <keys>` ("ctrl+t", "ctrl+a, delete"): Siva types into a window or presses its keys; answered
+//! with `{"type":"typed","req":…,"ok":…,"missing":"…","why":"…"}`.
 //!
 //! Encoding and parsing are pure and tested here; the socket work is non-blocking and runs from
 //! a 50 ms timer in `state.rs`, so a slow or dead shell never stalls the compositor (a client
@@ -113,6 +118,27 @@ pub enum Request {
     KeepAwake(Vec<String>),
     /// 16b/16c: the window switcher.
     Switcher(SwitcherRequest),
+    /// 19c: `place <id> left|right|fill|restore`: the shell's assistant (Siva) puts a window
+    /// on a half of the screen, fills it, or restores it, as the snap keys would.
+    Place { id: u64, to: PlaceTo },
+    /// 20b: `send <id> <1-9>`: the assistant sends a window to another desktop (as
+    /// Super+Shift+N does for the focused one), staying here.
+    Send { id: u64, workspace: usize },
+    /// 20b: `show-desktop`: every window out of the way, or back (as the Show Desktop key).
+    ShowDesktop,
+    /// 20e: `type <req> <id> <hex>`: type the text into the window.
+    Type { req: u64, id: u64, text: String },
+    /// 20e: `press <req> <id> <keys>`: press key combinations in the window.
+    Press { req: u64, id: u64, keys: String },
+}
+
+/// 19c: where `place` puts a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceTo {
+    Left,
+    Right,
+    Fill,
+    Restore,
 }
 
 /// 16b/16c: what the shell asks of the window switcher.
@@ -298,6 +324,20 @@ pub fn parse_request(line: &str) -> Option<Request> {
     if let Some(rest) = trimmed.strip_prefix("keep-awake ") {
         return parse_keep_awake(rest);
     }
+    // 20e: `press`'s keys may have spaces ("page down").
+    for (cmd, typing) in [("type ", true), ("press ", false)] {
+        if let Some(rest) = trimmed.strip_prefix(cmd) {
+            let mut parts = rest.splitn(3, ' ');
+            let req: u64 = parts.next()?.parse().ok()?;
+            let id: u64 = parts.next()?.parse().ok()?;
+            let arg = parts.next()?.trim();
+            return if typing {
+                crate::typing::from_hex(arg).map(|text| Request::Type { req, id, text })
+            } else {
+                (!arg.is_empty() && arg.len() <= 200).then(|| Request::Press { req, id, keys: arg.to_string() })
+            };
+        }
+    }
     if let Some(rest) = trimmed.strip_prefix("set-path ") {
         let (key, path) = rest.split_once(' ').unwrap_or((rest, ""));
         let ok = !key.is_empty() && key.len() <= 40 && path.len() <= crate::prefs::MAX_PATH;
@@ -352,6 +392,28 @@ pub fn parse_request(line: &str) -> Option<Request> {
             "off" => Request::DockFollow(false),
             _ => return None,
         },
+        "place" => {
+            let rest: Vec<&str> = words.by_ref().collect();
+            let (id, to) = match rest[..] {
+                [id, to] => (id.parse().ok()?, to),
+                _ => return None,
+            };
+            let to = match to {
+                "left" => PlaceTo::Left,
+                "right" => PlaceTo::Right,
+                "fill" => PlaceTo::Fill,
+                "restore" => PlaceTo::Restore,
+                _ => return None,
+            };
+            return Some(Request::Place { id, to });
+        }
+        "send" => {
+            let rest: Vec<&str> = words.by_ref().collect();
+            let [id, n] = rest[..] else { return None };
+            let n: usize = n.parse().ok().filter(|n| (1..=crate::workspace::COUNT).contains(n))?;
+            return Some(Request::Send { id: id.parse().ok()?, workspace: n });
+        }
+        "show-desktop" => Request::ShowDesktop,
         "switcher" => {
             let rest: Vec<&str> = words.by_ref().collect();
             let req = match rest[..] {
@@ -381,7 +443,7 @@ pub fn parse_request(line: &str) -> Option<Request> {
     };
     // Exactly the words the command takes.
     let expected = match req {
-        Request::Logout | Request::Layout | Request::Lock | Request::Token | Request::Displays => 1,
+        Request::Logout | Request::Layout | Request::Lock | Request::Token | Request::Displays | Request::ShowDesktop => 1,
         Request::Shot { .. } | Request::DockBar { .. } => 5,
         _ => 2,
     };
@@ -732,6 +794,25 @@ mod tests {
         assert_eq!(parse_request("activate 3"), Some(Request::Activate(3)));
         assert_eq!(parse_request(" close 12 "), Some(Request::Close(12)));
         assert_eq!(parse_request("minimize 1"), Some(Request::Minimize(1)));
+        // 19c
+        assert_eq!(parse_request("place 4 left"), Some(Request::Place { id: 4, to: PlaceTo::Left }));
+        // 20b
+        assert_eq!(parse_request("send 4 2"), Some(Request::Send { id: 4, workspace: 2 }));
+        assert_eq!(parse_request("send 4 0"), None);
+        assert_eq!(parse_request("send 4 10"), None);
+        assert_eq!(parse_request("send four 2"), None);
+        assert_eq!(parse_request("show-desktop"), Some(Request::ShowDesktop));
+        // 20e
+        assert_eq!(parse_request("type 7 3 6869"), Some(Request::Type { req: 7, id: 3, text: "hi".into() }));
+        assert_eq!(parse_request("type 7 3 zz"), None);
+        assert_eq!(parse_request("type 7 3"), None);
+        assert_eq!(parse_request("press 8 3 ctrl+a, page down"), Some(Request::Press { req: 8, id: 3, keys: "ctrl+a, page down".into() }));
+        assert_eq!(parse_request("press 8 x ctrl+t"), None);
+        assert_eq!(parse_request("press 8 3"), None);
+        assert_eq!(parse_request("place 4 restore"), Some(Request::Place { id: 4, to: PlaceTo::Restore }));
+        assert_eq!(parse_request("place 4 sideways"), None);
+        assert_eq!(parse_request("place left"), None);
+        assert_eq!(parse_request("place 4 fill extra"), None);
         assert_eq!(parse_request("logout"), Some(Request::Logout));
         assert_eq!(parse_request("thumb 12"), Some(Request::Thumb(12)));
         assert_eq!(parse_request("thumb"), None);

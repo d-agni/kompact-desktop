@@ -16,6 +16,7 @@
 //! 6m-b: the logo menu (About, Restart Shell, Restart…/Shut Down…) is a third overlay view.
 
 mod apps;
+mod assistant;
 mod blur;
 mod bluetooth;
 mod calc;
@@ -126,6 +127,7 @@ fn main() {
         .manage(compositor::Compositor::default())
         .manage(power::LockWatch::default())
         .manage(screensaver::ScreenSaver::default())
+        .manage(assistant::run::Assistant::default())
         .manage(thumbs::Thumbs::default())
         .manage(notify::Notifications::new())
         .manage(wallpapers)
@@ -219,6 +221,40 @@ fn main() {
             media::media_state,
             media::media_control,
             screensaver::keep_awake_state,
+            assistant::hud::assistant_toggle,
+            assistant::hud::hud_hide,
+            assistant::hud::hud_show,
+            assistant::hud::hud_try,
+            assistant::hud::hud_input,
+            assistant::hud::hud_keyboard,
+            assistant::run::assistant_listen,
+            assistant::run::assistant_stop,
+            assistant::model::model_state,
+            assistant::learn::voice_learnt,
+            assistant::learn::voice_learnt_change,
+            assistant::learn::voice_learn,
+            assistant::run::voice_hear,
+            assistant::routines::routines_state,
+            assistant::routines::routines_save,
+            assistant::speech::speech_state,
+            assistant::speech::set_speak,
+            assistant::web::internet_state,
+            assistant::web::set_internet,
+            assistant::cloud::cloud_state,
+            assistant::cloud::set_cloud,
+            assistant::cloud::cloud_test,
+            assistant::run::assistant_open_link,
+            assistant::speech::speech_hush,
+            assistant::run::assistant_ask,
+            assistant::run::assistant_answer,
+            assistant::run::assistant_undo,
+            assistant::run::assistant_heard,
+            assistant::voice::voice_state,
+            assistant::voice::set_hearing,
+            assistant::voice::voice_stop,
+            assistant::voice::voice_cancel,
+            assistant::activity::assistant_activity,
+            assistant::activity::assistant_activity_clear,
             screensaver::set_keep_awake,
             sound::osd_state,
             sound::osd_hide,
@@ -294,6 +330,10 @@ fn main() {
             }
             // 12c: the on-screen volume level (not tied to notifications).
             build_osd(app.handle(), gpu, snapshot_dir.clone())?;
+            // 19h: the assistant's HUD, hidden until the menu bar's assistant item opens it.
+            build_hud(app.handle(), gpu, snapshot_dir.clone())?;
+            // 19f: the local model's prompt cache, made quietly after start.
+            assistant::model::warm_up();
             if notify::enabled_from_env(std::env::var("KOMPACT_SHELL_NOTIFICATIONS").ok().as_deref()) {
                 build_notify(app.handle(), gpu, snapshot_dir.clone())?;
                 notify::start(app.handle().clone());
@@ -712,6 +752,42 @@ fn build_osd(app: &AppHandle, gpu: Gpu, snapshot_dir: Option<PathBuf>) -> tauri:
         }
     });
     info!("osd: built (hidden until a volume key)");
+    Ok(())
+}
+
+/// 19h: the assistant's HUD (`assistant::hud`): a transparent surface on the top layer (above
+/// windows, below full-screen ones and the overlay), top-right under the menu bar, hidden until
+/// used; the keyboard only while typing to it, the pointer only on what the page draws.
+fn build_hud(app: &AppHandle, gpu: Gpu, snapshot_dir: Option<PathBuf>) -> tauri::Result<()> {
+    use assistant::hud;
+    let window = WebviewWindowBuilder::new(app, hud::LABEL, WebviewUrl::App("hud.html".into()))
+        .title("Siva")
+        .visible(false)
+        .decorations(false)
+        .resizable(false)
+        .inner_size(hud::WIDTH as f64, hud::HEIGHT as f64)
+        .transparent(true)
+        .shared()
+        .build()?;
+    configure_webview(&window, hud::LABEL.into(), gpu, TRANSPARENT, snapshot_dir);
+    let gtk_window = window.gtk_window()?;
+    gtk_window.init_layer_shell();
+    gtk_window.set_namespace("kompact-assistant");
+    gtk_window.set_layer(Layer::Top);
+    gtk_window.set_anchor(Edge::Top, true);
+    gtk_window.set_anchor(Edge::Right, true);
+    gtk_window.set_layer_shell_margin(Edge::Top, hud::MARGIN_TOP);
+    gtk_window.set_layer_shell_margin(Edge::Right, hud::MARGIN_RIGHT);
+    gtk_window.set_exclusive_zone(0);
+    gtk_window.set_keyboard_mode(KeyboardMode::None);
+    gtk_window.set_size_request(hud::WIDTH, hud::HEIGHT);
+    // Nothing takes the pointer until the page says what it draws.
+    gtk_window.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
+    window.on_window_event(|event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+        }
+    });
     Ok(())
 }
 

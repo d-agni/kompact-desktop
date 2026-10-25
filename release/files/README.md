@@ -44,6 +44,30 @@ sudo kompact-login-screen disable      # back to the old login screen (from the 
 Every shortcut can be changed (System Settings → Keyboard Shortcuts, with macOS, Windows 11 and
 classic presets).
 
+## Siva, the assistant
+
+The ring in the menu bar (or Ctrl+Super+V): click it and speak, or type. "Volume 30", "dark
+mode", "put Firefox and Files side by side", "set up for coding", "why is my computer slow?",
+"what's the weather?", "open Text Editor, write a short poem and save it as poem.txt".
+Hearing, speaking and the small AI model run on this PC; what Siva hears is never kept. It goes
+online only for look-ups (weather, news, facts, searches, from free sources) as Settings →
+Assistant → Internet allows (Always, Ask or Off), and to a cloud AI only if you turn one on with
+your own key. What can't be undone (closing windows, Wi-Fi, logging out, power, typing into a
+terminal) asks first, and only a click says yes. Settings → Assistant → Hearing picks Accurate or
+Fast speech recognition.
+
+Typing works right away. For speech, set it up once, as yourself:
+
+```sh
+kompact-assistant-setup            # hearing, voice and understanding (~1.4 GB, once)
+kompact-assistant-setup --check    # what's set up
+kompact-assistant-setup --remove   # delete the downloaded models again
+```
+
+(or `sudo ./install.sh --assistant` does it while installing). Hearing and understanding use
+Ubuntu's `whisper.cpp` and `llama.cpp-tools` packages, which Ubuntu 26.04 has and 24.04
+doesn't; there, Siva hears nothing but still speaks and understands typed requests.
+
 ## If something goes wrong
 
 - **Black screen or back at the login screen:** press Ctrl+Alt+F3, log in on the text console,
@@ -60,7 +84,8 @@ sudo kompact-uninstall
 
 This puts the old login screen back if kompact's was on and removes kompact's programs. The
 packages it installed stay (`sudo apt autoremove` tidies them), and your home folder is
-untouched: `~/.config/kompact` holds your kompact settings if you want to delete them.
+untouched: `~/.config/kompact` holds your kompact settings if you want to delete them, and
+`kompact-assistant-setup --remove` deletes the assistant's models (run it before uninstalling).
 
 ## What's in here
 

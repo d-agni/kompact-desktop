@@ -25,6 +25,11 @@ eq(shows("bluetooth", "active", bt(true, 1)), true, "bt connected");
 eq(shows("bluetooth", "active", bt(false, 1)), false, "bt off");
 eq(shows("bluetooth", "always", bt(false, 0)), true, "bt always");
 eq(shows("bluetooth", "always", bt(true, 1, null)), false, "no adapter");
+// 19h: the assistant: always by default; When Active, only while it listens or works.
+eq(shows("assistant", undefined, {}), true, "assistant by default");
+eq(shows("assistant", "active", {}), false, "assistant idle");
+eq(shows("assistant", "active", { assistant: { active: true } }), true, "assistant listening");
+eq(shows("assistant", "never", { assistant: { active: true } }), false, "assistant never");
 // Sound: muted or playing.
 eq(shows("sound", "active", { sound: { output: true, muted: false, playing: [] } }), false, "silent");
 eq(shows("sound", "active", { sound: { output: true, muted: false, playing: ["Firefox"] } }), true, "playing");

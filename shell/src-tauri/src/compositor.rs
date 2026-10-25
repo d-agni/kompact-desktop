@@ -37,6 +37,24 @@ pub struct Compositor {
     displays: Mutex<Option<Value>>,
     /// 12i-1: the last `idle` message (the apps keeping the screen awake).
     idle: Mutex<Option<Value>>,
+    /// 19k: the last `layout` message (where the windows are) and when it came, for the
+    /// assistant's "the Firefox on the left".
+    layout: Mutex<Option<(std::time::Instant, Value)>>,
+    /// 20e: Siva's typing jobs waiting for kompact's `typed` answer, by number.
+    typed_waiters: Mutex<std::collections::HashMap<u64, std::sync::mpsc::Sender<Value>>>,
+}
+
+/// 20e: `type <req> <id> <hex>`: the text as UTF-8 in hex (one line whatever it holds).
+pub fn type_line(req: u64, id: u64, text: &str) -> Option<String> {
+    let hex: String = text.bytes().map(|b| format!("{b:02x}")).collect();
+    (!text.is_empty() && text.chars().count() <= 500).then(|| format!("type {req} {id} {hex}\n"))
+}
+
+/// 20e: `press <req> <id> <keys>` ("ctrl+t", "ctrl+a, delete").
+pub fn press_line(req: u64, id: u64, keys: &str) -> Option<String> {
+    let keys = keys.trim();
+    let ok = !keys.is_empty() && keys.len() <= 200 && !keys.chars().any(char::is_control);
+    ok.then(|| format!("press {req} {id} {keys}\n"))
 }
 
 /// 9e-c: the monitors a `sharing` message says are shared (empty when it's off or malformed).
@@ -62,7 +80,7 @@ pub fn request_line(action: &str, id: Option<u64>) -> Option<String> {
         ("activate" | "close" | "minimize" | "thumb", Some(id)) => Some(format!("{action} {id}\n")),
         // 6e: the panel's workspace indicator; `id` is the workspace (1-based).
         ("workspace", Some(n)) => Some(format!("workspace {n}\n")),
-        ("logout" | "layout" | "lock" | "token", None) => Some(format!("{action}\n")),
+        ("logout" | "layout" | "lock" | "token" | "show-desktop", None) => Some(format!("{action}\n")),
         // 16b/16c: the window switcher (the dock's button, the overlay's cards).
         ("switcher-open", None) => Some("switcher open\n".into()),
         ("switcher-cancel", None) => Some("switcher cancel\n".into()),
@@ -234,6 +252,12 @@ fn serve(app: &AppHandle, stream: UnixStream) {
                 if matches!(action.as_str(), "volume-up" | "volume-down" | "volume-mute" | "mic-mute") {
                     crate::sound::key(app, &action);
                 }
+                // 19d-2: Ctrl+Super+V, as a click on the assistant's menu-bar item.
+                if action == "assistant" {
+                    if let Err(e) = crate::assistant::hud::assistant_toggle(app.clone()) {
+                        warn!("compositor: assistant key: {e}");
+                    }
+                }
                 if let Some((mode, key)) = wanted {
                     let handle = app.clone();
                     let _ = app.run_on_main_thread(move || {
@@ -261,6 +285,13 @@ fn serve(app: &AppHandle, stream: UnixStream) {
                 info!("compositor: dock to {to}");
                 let handle = app.clone();
                 let _ = app.run_on_main_thread(move || crate::remap_dock(&handle, &format!("pointer held at the bottom of {to}")));
+            }
+            // 20e: a typing job is done (or not).
+            Some("typed") => {
+                let req = msg.get("req").and_then(Value::as_u64).unwrap_or(0);
+                if let Some(w) = c.typed_waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&req) {
+                    let _ = w.send(msg.clone());
+                }
             }
             // 8a: an activation token for the oldest launch waiting for one.
             Some("token") => {
@@ -369,6 +400,7 @@ fn serve(app: &AppHandle, stream: UnixStream) {
             }
             // 6e: where the windows are, for the workspace overview.
             Some("layout") => {
+                *c.layout.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), msg.clone()));
                 let _ = app.emit("kompact-layout", msg);
             }
             other => warn!("compositor: unknown message type {other:?}"),
@@ -377,6 +409,16 @@ fn serve(app: &AppHandle, stream: UnixStream) {
 }
 
 impl Compositor {
+    /// 20b: the last `settings` message (kompact's own settings).
+    pub fn last_settings(&self) -> Option<Value> {
+        self.settings.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 19k: the last `layout` message, if it came after `since`.
+    pub fn layout_since(&self, since: std::time::Instant) -> Option<Value> {
+        self.layout.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|(t, _)| *t >= since).map(|(_, v)| v.clone())
+    }
+
     /// 9e-c: the last `sharing` message.
     pub fn sharing_message(&self) -> Option<Value> {
         self.sharing.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -405,6 +447,21 @@ impl Compositor {
                 None
             }
         }
+    }
+
+    /// 20e: send a `type`/`press` line (numbered `req`) and wait up to `wait` for kompact's
+    /// `typed` answer (not on the main thread).
+    pub fn type_into(&self, req: u64, line: &str, wait: Duration) -> Result<Value, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.typed_waiters.lock().unwrap_or_else(|e| e.into_inner()).insert(req, tx);
+        let action = line.split(' ').next().unwrap_or("type").to_string();
+        if let Err(e) = self.send_line(&action, line) {
+            self.typed_waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&req);
+            return Err(e);
+        }
+        let answer = rx.recv_timeout(wait);
+        self.typed_waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&req);
+        answer.map_err(|_| "kompact didn't answer (it may need a re-login to type for me)".to_string())
     }
 
     pub fn send(&self, action: &str, id: Option<u64>) -> Result<(), String> {
@@ -446,7 +503,10 @@ impl Compositor {
     fn send_line(&self, action: &str, line: &str) -> Result<(), String> {
         let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let Some(stream) = writer.as_mut() else { return Err("not connected to kompact".into()) };
-        if action == "thumb" || action == "dock-icons" || action == "switcher-select" {
+        if action == "type" {
+            // 20e: never what is typed in the log.
+            info!("compositor: sending type ({} bytes)", line.len());
+        } else if action == "thumb" || action == "dock-icons" || action == "switcher-select" {
             // Every 2 s per window while a dock preview is open.
             tracing::debug!("compositor: sending {}", line.trim_end());
         } else {
@@ -695,6 +755,12 @@ mod tests {
         assert_eq!(request_line("logout", Some(1)), None);
         assert_eq!(request_line("lock", None).as_deref(), Some("lock\n"));
         assert_eq!(request_line("token", None).as_deref(), Some("token\n"));
+        // 20e
+        assert_eq!(type_line(4, 9, "hi é").as_deref(), Some("type 4 9 686920c3a9\n"));
+        assert_eq!(type_line(4, 9, ""), None);
+        assert_eq!(type_line(4, 9, &"a".repeat(501)), None);
+        assert_eq!(press_line(5, 9, " ctrl+t ").as_deref(), Some("press 5 9 ctrl+t\n"));
+        assert_eq!(press_line(5, 9, "ctrl+t\nlogout"), None, "one line only");
         assert_eq!(request_line("activate", None), None);
         assert_eq!(request_line("rm", Some(1)), None);
         assert_eq!(shot_line(1466, 50, 300, 200).as_deref(), Some("shot 1466 50 300 200\n"));

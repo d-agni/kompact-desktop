@@ -75,7 +75,7 @@ fn prefs_path() -> Option<PathBuf> {
     Some(base.join("kompact").join("clock"))
 }
 
-fn load_prefs() -> ClockPrefs {
+pub fn load_prefs() -> ClockPrefs {
     prefs_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| ClockPrefs::parse(&t)).unwrap_or_default()
 }
 

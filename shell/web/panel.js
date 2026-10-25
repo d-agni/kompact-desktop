@@ -74,7 +74,7 @@ const mbState = {};
 /** @type {Record<string, MenuBarMode>} */
 let mbModes = { ...MENU_BAR_DEFAULTS };
 /** Item → its element in the bar. */
-const MB_ELEMENTS = { network: "net", bluetooth: "bt", sound: "sound", input: "input", spaces: "spaces", spotlight: "spotlight" };
+const MB_ELEMENTS = { network: "net", bluetooth: "bt", sound: "sound", input: "input", spaces: "spaces", spotlight: "spotlight", assistant: "assistant" };
 let mbShown = "";
 
 function applyMenuBar() {
@@ -110,6 +110,28 @@ document.getElementById("logo")?.addEventListener("click", () => invoke("toggle_
 document.getElementById("apps")?.addEventListener("click", () => invoke("toggle_overlay", { mode: "launchpad" }));
 document.getElementById("switcher")?.addEventListener("click", () => invoke("window_action", { action: "switcher-open" }));
 document.getElementById("spotlight")?.addEventListener("click", () => invoke("toggle_overlay", { mode: "spotlight" }));
+
+// ---- 19h: Siva, the assistant ----
+const asItem = /** @type {HTMLElement} */ (document.getElementById("assistant"));
+asItem.addEventListener("click", () => invoke("assistant_toggle"));
+const asEvents = /** @type {any} */ (window).__TAURI__?.event;
+if (asEvents) {
+  asEvents.listen("kompact-assistant", (/** @type {{payload: {state: string, detail: string}}} */ e) => {
+    const st = e.payload.state;
+    // 19h-2: "speaking" while it says its reply, "spoken" after.
+    const active = ["listening", "ready", "thinking", "speaking"].includes(st);
+    asItem.classList.toggle("on", active);
+    asItem.classList.toggle("thinking", st === "thinking");
+    if (!active) asItem.style.setProperty("--l", "0");
+    asItem.title = !active ? "Siva: click and speak" : st === "thinking" ? "Siva is working on it" : st === "speaking" ? "Siva is speaking: click to talk" : "Siva is listening: click when you're done";
+    if (!!mbState.assistant?.active !== active) {
+      mbState.assistant = { active };
+      applyMenuBar();
+    }
+  });
+  // The wave follows your voice (a few times a second, only while listening).
+  asEvents.listen("kompact-assistant-level", (/** @type {{payload: number}} */ e) => asItem.style.setProperty("--l", String(Math.min(1, Math.max(0, e.payload)).toFixed(2))));
+}
 /** @typedef {{id: number, name: string, focused: boolean, workspace: number}} Win */
 /** @typedef {{workspace: number, windows: Win[]}} WindowsMsg */
 

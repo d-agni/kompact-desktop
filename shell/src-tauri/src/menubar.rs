@@ -11,13 +11,14 @@ use tauri::{AppHandle, Emitter};
 use tracing::info;
 
 /// The items, in the order Settings lists them, with their default.
-pub const ITEMS: [(&str, Mode); 6] = [
+pub const ITEMS: [(&str, Mode); 7] = [
     ("network", Mode::Active),
     ("bluetooth", Mode::Active),
     ("sound", Mode::Active),
     ("input", Mode::Active),
     ("spaces", Mode::Active),
     ("spotlight", Mode::Always),
+    ("assistant", Mode::Always),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +137,7 @@ mod tests {
         let d = Prefs::default();
         assert_eq!(d.get("network"), Some(Mode::Active));
         assert_eq!(d.get("spotlight"), Some(Mode::Always));
+        assert_eq!(d.get("assistant"), Some(Mode::Always));
         assert_eq!(Prefs::parse(&d.to_text()), d);
         let mut p = Prefs::parse("# x\nsound=always\nbluetooth=never\nnetwork=maybe\nclock=never\n");
         assert_eq!(p.get("sound"), Some(Mode::Always));

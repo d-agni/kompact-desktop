@@ -361,6 +361,7 @@ function showPane(name) {
   if (name === "network") setTimeout(() => loadNetwork(true), 0);
   if (name === "sound") setTimeout(loadSound, 0);
   if (name === "notifications") setTimeout(loadNotify, 0);
+  if (name === "assistant") setTimeout(() => (void loadAssistant(), void loadMenuBar()), 0);
   if (name === "input") setTimeout(loadCatalogue, 0);
   if (name === "displays") setTimeout(loadDisplays, 0);
   // 12j
@@ -658,6 +659,484 @@ document.querySelectorAll("[data-ms]").forEach((b) =>
     const ms = Number(/** @type {HTMLElement} */ (b).dataset.ms);
     if (nt?.banner_ms !== ms) void setNotify({ banner_ms: ms });
   }),
+);
+
+// ---- 19c-2, 19h: Assistant (voice, what it may do, what it did; the menu-bar choice is 13d's) ----
+
+/** @typedef {{at: number, kind: string, tool: string, text: string}} ActivityEntry */
+/** @type {ActivityEntry[]} */
+let activity = [];
+/** 19d @type {{ready: boolean, model: string | null, missing: string | null} | null} */
+let voice = null;
+/** 19h-2 @type {{ready: boolean, voice: string, speak: "voice" | "always" | "never"} | null} */
+let speech = null;
+/** 19f @type {{ready: boolean, model: string, missing: string | null} | null} */
+let model = null;
+/** 20d @type {{mode: "always" | "ask" | "off", place: string, zone_place: string, curl: boolean} | null} */
+let internet = null;
+/** 20d-2: Settings → Assistant → Cloud AI (`cloud_state`). @type {any} */
+let cloud = null;
+
+/** @param {string} cmd @param {Record<string, unknown>} [args] */
+function asCall(cmd, args) {
+  if (!tauri) return Promise.resolve(null);
+  return tauri.core.invoke(cmd, args).catch((/** @type {unknown} */ e) => {
+    const el = $("as-status");
+    el.textContent = String(e);
+    el.classList.add("error");
+    return null;
+  });
+}
+
+async function loadAssistant() {
+  void loadRoutines();
+  void loadLearnt();
+  const [list, v, sp, md, net, cl] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state"), asCall("model_state"), asCall("internet_state"), asCall("cloud_state")]);
+  model = md;
+  internet = net;
+  cloud = cl;
+  activity = list || [];
+  voice = v;
+  speech = sp;
+  renderAssistant();
+}
+
+async function loadActivity() {
+  activity = (await asCall("assistant_activity")) || [];
+  renderActivity();
+}
+
+const AS_KINDS = /** @type {Record<string, string>} */ ({
+  asked: "You asked",
+  heard: "You said",
+  understood: "Understood as",
+  ran: "Done",
+  failed: "Didn't work",
+  refused: "Wouldn't",
+  "asks-first": "Asked you first",
+  confirmed: "You confirmed",
+  cancelled: "Cancelled",
+  undone: "Undone",
+});
+
+/** "14:02", "Yesterday 14:02" or "3 Oct 14:02". @param {number} secs */
+function asWhen(secs) {
+  const d = new Date(secs * 1000);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (day === today) return time;
+  if (day === today - 86400000) return `Yesterday ${time}`;
+  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
+}
+
+function renderAssistant() {
+  $("as-voice").textContent = !voice ? "" : voice.ready ? `Ready, with the ${voice.model} speech model. What you say is turned into text on this PC and never kept.` : `Not set up yet. ${voice.missing}`;
+  // 20g: Accurate (small.en) or Fast (base.en); Fast needs base.en or tiny.en fetched.
+  const hearing = /** @type {HTMLSelectElement} */ ($("as-hearing"));
+  const models = voice?.models || [];
+  const quick = models.includes("base.en") || models.includes("tiny.en");
+  hearing.value = voice?.hearing || "accurate";
+  hearing.disabled = !voice?.ready || !quick || !models.includes("small.en");
+  $("as-hearing-hint").textContent = !voice?.ready
+    ? ""
+    : !models.includes("small.en")
+      ? "Only the quick speech model is here. Run “kompact-assistant-setup hearing” for the accurate one."
+      : !quick
+        ? "Only the accurate speech model is here. Fast needs the base.en model."
+        : voice.hearing === "fast"
+          ? "Fast: answers about 1.5 s sooner, but mishears more often."
+          : "Accurate: understands accents and quiet speech better, about 1.5 s slower.";
+  const speak = /** @type {HTMLSelectElement} */ ($("as-speak"));
+  speak.value = speech?.speak || "voice";
+  speak.disabled = !speech?.ready;
+  $("as-speech").textContent = !speech
+    ? ""
+    : speech.ready
+      ? `With the British English “Alan” voice (${speech.voice}), made on this PC.`
+      : "Not set up yet. Run “kompact-assistant-setup voice” in a terminal (about 140 MB, once).";
+  $("as-model").textContent = !model
+    ? ""
+    : model.ready
+      ? `Ready (${model.model}): “I can't hear anything”, “get the browser out of the way”. A second or two; a guess of several steps asks first.`
+      : `Not set up yet. ${model.missing}`;
+  renderInternet();
+  renderCloud();
+  renderActivity();
+  renderOverview();
+}
+
+// ---- 20f: the overview and the tabs ----
+
+/** One tile: its dot (ok / warn / off) and what it says. @param {string} id @param {"ok" | "warn" | "off"} state @param {string} detail */
+function asTile(id, state, detail) {
+  const t = $(id);
+  t.dataset.state = state;
+  /** @type {HTMLElement} */ (t.querySelector(".as-t-detail")).textContent = detail;
+}
+
+function renderOverview() {
+  if (voice) asTile("as-t-hear", voice.ready ? "ok" : "warn", voice.ready ? `Ready (${voice.model})` : "Not set up");
+  if (speech) {
+    const how = /** @type {Record<string, string>} */ ({ voice: "When you speak", always: "Always", never: "Off" })[speech.speak] || "";
+    asTile("as-t-speak", !speech.ready ? "warn" : speech.speak === "never" ? "off" : "ok", speech.ready ? how : "Not set up");
+  }
+  const cloudOn = cloud && cloud.on && !cloud.not_used;
+  const provider = cloudOn ? cloud.providers.find((/** @type {{id: string}} */ p) => p.id === cloud.provider)?.name || cloud.provider : "";
+  asTile("as-t-think", cloudOn || model?.ready ? "ok" : "warn", cloudOn ? `Cloud AI (${provider})` : model?.ready ? `On this PC (${model.model})` : "Built-in rules only");
+  if (internet) asTile("as-t-net", internet.mode === "off" ? "off" : "ok", /** @type {Record<string, string>} */ ({ always: "Always", ask: "Asks each time", off: "Off" })[internet.mode]);
+}
+
+/** @param {string} name */
+function showAsTab(name) {
+  for (const b of document.querySelectorAll("#as-tabs [data-tab]")) b.setAttribute("aria-checked", String(/** @type {HTMLElement} */ (b).dataset.tab === name));
+  for (const t of document.querySelectorAll("#pane-assistant .as-tab")) /** @type {HTMLElement} */ (t).hidden = /** @type {HTMLElement} */ (t).dataset.tab !== name;
+  try {
+    localStorage.setItem("assistant-tab", name);
+  } catch {
+    // Remembering the tab is a convenience only.
+  }
+}
+
+/** Siva's HUD with this request, as if typed there ("" opens the Type box). @param {string} text */
+function trySiva(text) {
+  void asCall("hud_try", { text });
+}
+
+/** 20d */
+function renderInternet() {
+  if (!internet) return;
+  /** @type {HTMLSelectElement} */ ($("as-net")).value = internet.mode;
+  const town = /** @type {HTMLInputElement} */ ($("as-town"));
+  if (document.activeElement !== town) town.value = internet.place;
+  town.placeholder = internet.zone_place || "e.g. Chennai";
+  town.disabled = internet.mode === "off";
+  $("as-town-hint").textContent = internet.place
+    ? "For “what's the weather” and local news. You can also say “I live in Chennai”."
+    : `Not set: ${internet.zone_place ? `${internet.zone_place}, from your time zone, is used` : "say the town when you ask"}. Type yours, or say “I live in Chennai”.`;
+  if (!internet.curl) $("as-net-hint").textContent = "Needs curl, which isn't installed: run “sudo apt install curl” in a terminal.";
+}
+
+/** @param {string} mode @param {string} place */
+async function setInternet(mode, place) {
+  const st = await asCall("set_internet", { mode, place });
+  if (st) internet = st;
+  renderInternet();
+  // 20d-2: the cloud AI is used only while Internet is Always.
+  cloud = (await asCall("cloud_state")) || cloud;
+  renderCloud();
+  renderOverview();
+}
+
+/** 20d-2 */
+function renderCloud() {
+  if (!cloud) return;
+  const on = /** @type {HTMLInputElement} */ ($("as-cloud-on"));
+  on.checked = cloud.on;
+  const pick = /** @type {HTMLSelectElement} */ ($("as-cloud-provider"));
+  if (pick.options.length !== cloud.providers.length) {
+    pick.replaceChildren(...cloud.providers.map((/** @type {{id: string, name: string}} */ p) => new Option(p.name, p.id)));
+  }
+  pick.value = cloud.provider;
+  const chosen = cloud.providers.find((/** @type {{id: string}} */ p) => p.id === cloud.provider);
+  const model = /** @type {HTMLInputElement} */ ($("as-cloud-model"));
+  if (document.activeElement !== model) model.value = cloud.model;
+  model.placeholder = chosen?.model || "";
+  const key = /** @type {HTMLInputElement} */ ($("as-cloud-key"));
+  key.value = "";
+  key.placeholder = cloud.has_key ? `Saved${cloud.key_end ? `, ends in …${cloud.key_end}` : ""}` : "Paste your key";
+  /** @type {HTMLButtonElement} */ ($("as-cloud-forget")).disabled = !cloud.has_key;
+  /** @type {HTMLButtonElement} */ ($("as-cloud-test")).disabled = !cloud.has_key;
+  $("as-cloud-key-hint").textContent = cloud.has_key ? "Saved in your home folder, readable by you alone. Paste a new one to replace it." : "From the service's website. Kept in your home folder, readable by you alone.";
+  $("as-cloud-hint").textContent = !cloud.on
+    ? "Optional. With your own key, a cloud AI understands and talks in place of the small model on this PC. It's given only your words, never your windows, files or screen, and Siva still asks before anything drastic. Only while Internet is Always."
+    : cloud.not_used
+      ? `Not in use: ${cloud.not_used}. The model on this PC answers meanwhile.`
+      : `In use (${chosen?.name || cloud.provider}). If it fails, the model on this PC answers instead.`;
+}
+
+/** @param {string | null} key a new key, "" to forget it, null to keep it */
+async function setCloud(key) {
+  const st = await asCall("set_cloud", {
+    on: /** @type {HTMLInputElement} */ ($("as-cloud-on")).checked,
+    provider: /** @type {HTMLSelectElement} */ ($("as-cloud-provider")).value,
+    model: /** @type {HTMLInputElement} */ ($("as-cloud-model")).value,
+    key,
+  });
+  if (st) cloud = st;
+  $("as-cloud-result").textContent = "";
+  renderCloud();
+  renderOverview();
+}
+
+async function testCloud() {
+  if (!tauri) return;
+  const out = $("as-cloud-result");
+  out.textContent = "Asking…";
+  out.classList.remove("error");
+  try {
+    out.textContent = await tauri.core.invoke("cloud_test");
+  } catch (e) {
+    out.textContent = String(e);
+    out.classList.add("error");
+  }
+}
+
+function renderActivity() {
+  const list = $("as-list");
+  // 20f: the search box.
+  const q = /** @type {HTMLInputElement} */ ($("as-search")).value.trim().toLowerCase();
+  const shown = q ? activity.filter((e) => `${e.text} ${e.tool} ${AS_KINDS[e.kind] || e.kind}`.toLowerCase().includes(q)) : activity;
+  list.replaceChildren(
+    ...shown.map((e) => {
+      const row = document.createElement("div");
+      row.className = `row as-entry as-${e.kind}`;
+      const what = e.kind === "asked" || e.kind === "heard" ? `“${e.text}”` : e.text || (e.tool ? e.tool.replace(/_/g, " ") : "");
+      const hint = [AS_KINDS[e.kind] || e.kind, e.kind !== "asked" && e.tool ? e.tool.replace(/_/g, " ") : ""].filter(Boolean).join(" · ");
+      row.append(netLabel(what, hint));
+      row.append(Object.assign(document.createElement("span"), { className: "as-when", textContent: asWhen(e.at) }));
+      return row;
+    }),
+  );
+  if (!shown.length) list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: q ? "Nothing matches." : "Nothing yet. What you ask Siva shows up here." }));
+  /** @type {HTMLButtonElement} */ ($("as-clear")).disabled = !activity.length;
+}
+
+// ---- 19j: learn my voice ----
+
+/** @typedef {{phrases: [string, string][], word_fixes: [string, string][], words: string[], training: string[]}} Learnt */
+/** @type {Learnt | null} */
+let learnt = null;
+/** The training session: which phrase, how many learnt, and whether it's listening. */
+const lv = { i: 0, learnt: 0, busy: false, on: false };
+
+async function loadLearnt() {
+  learnt = await asCall("voice_learnt");
+  renderLearnt();
+}
+
+function renderLearnt() {
+  const list = $("lv-list");
+  const l = learnt;
+  /** @type {HTMLTextAreaElement} */ ($("lv-words")).value = (l?.words || []).join("\n");
+  const rows = (l?.phrases || []).slice().reverse().map(([heard, meant]) => {
+    const row = Object.assign(document.createElement("div"), { className: "row" });
+    row.append(netLabel(`“${heard}” → ${meant}`, "heard → meant"));
+    const b = Object.assign(document.createElement("button"), { className: "btn", type: "button", textContent: "Forget" });
+    b.addEventListener("click", async () => {
+      const st = await asCall("voice_learnt_change", { forget: heard });
+      if (st) learnt = st;
+      renderLearnt();
+    });
+    row.append(b);
+    return row;
+  });
+  list.replaceChildren(...rows);
+  if (l?.word_fixes.length) {
+    list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: `Words it puts right everywhere: ${l.word_fixes.map(([a, b]) => `${a} → ${b}`).join(", ")}` }));
+  }
+  if (!rows.length) list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: "Nothing learnt yet. Train it, or fix what it mishears with ✎." }));
+  /** @type {HTMLButtonElement} */ ($("lv-clear")).disabled = !rows.length;
+}
+
+function lvShow() {
+  const phrases = learnt?.training || [];
+  if (lv.i >= phrases.length) {
+    lv.on = false;
+    $("lv-train").hidden = true;
+    $("lv-start").textContent = "Train Again";
+    $("lv-status").textContent = lv.learnt ? `Training done: learnt ${lv.learnt} new thing${lv.learnt === 1 ? "" : "s"} about your voice.` : "Training done: it heard you right every time.";
+    void loadLearnt();
+    return;
+  }
+  $("lv-count").textContent = `${lv.i + 1} of ${phrases.length}.`;
+  $("lv-phrase").textContent = phrases[lv.i];
+  $("lv-heard").textContent = "Press Listen, wait for the chime, then say it as you would to Siva.";
+  $("lv-heard").classList.remove("learnt");
+}
+
+$("lv-start").addEventListener("click", async () => {
+  if (!learnt) await loadLearnt();
+  Object.assign(lv, { i: 0, learnt: 0, busy: false, on: true });
+  $("lv-train").hidden = false;
+  $("lv-status").textContent = "";
+  lvShow();
+});
+$("lv-listen").addEventListener("click", async () => {
+  if (lv.busy || !lv.on) return;
+  lv.busy = true;
+  const meant = learnt?.training[lv.i] || "";
+  const heardEl = $("lv-heard");
+  heardEl.classList.remove("learnt");
+  heardEl.textContent = "Listening… wait for the chime, then speak.";
+  /** @type {{text: string | null, note: string | null} | null} */
+  const r = await asCall("voice_hear");
+  lv.busy = false;
+  if (!lv.on) return;
+  if (!r?.text) {
+    heardEl.textContent = r?.note || "I didn't hear anything. Try again.";
+    return;
+  }
+  const isNew = await asCall("voice_learn", { heard: r.text, meant });
+  if (isNew) {
+    lv.learnt++;
+    heardEl.classList.add("learnt");
+    heardEl.textContent = `Heard “${r.text}”: learnt.`;
+  } else {
+    heardEl.textContent = `Heard “${r.text}”: right.`;
+  }
+  setTimeout(() => {
+    if (!lv.on || lv.busy) return;
+    lv.i++;
+    lvShow();
+  }, 1400);
+});
+$("lv-skip").addEventListener("click", () => {
+  if (lv.busy) return;
+  lv.i++;
+  lvShow();
+});
+$("lv-stop").addEventListener("click", () => {
+  lv.on = false;
+  if (lv.busy) void asCall("voice_cancel");
+  $("lv-train").hidden = true;
+  void loadLearnt();
+});
+$("lv-words-save").addEventListener("click", async () => {
+  const words = /** @type {HTMLTextAreaElement} */ ($("lv-words")).value.split("\n").map((w) => w.trim()).filter(Boolean);
+  const st = await asCall("voice_learnt_change", { words });
+  if (st) {
+    learnt = st;
+    $("lv-status").textContent = `Saved ${st.words.length} word${st.words.length === 1 ? "" : "s"}.`;
+  }
+  renderLearnt();
+});
+$("lv-clear").addEventListener("click", () =>
+  ask("Forget what Siva learnt about your voice?", "The corrections and your words are deleted from this PC. You can train it again any time.", [
+    ["Cancel", () => {}],
+    [
+      "Forget All",
+      async () => {
+        const st = await asCall("voice_learnt_change", { clear: true });
+        if (st) learnt = st;
+        renderLearnt();
+      },
+      true,
+    ],
+  ]),
+);
+
+// ---- 19e: routines ----
+
+/** @typedef {{name: string, phrases: string[]}} RoutineDef */
+
+async function loadRoutines() {
+  /** @type {RoutineDef[]} */
+  const list = (await asCall("routines_state")) || [];
+  renderRoutines(list, []);
+  $("as-rt-status").textContent = "";
+}
+
+/** @param {RoutineDef[]} list @param {{index: number, text: string}[]} problems */
+function renderRoutines(list, problems) {
+  $("as-routines").replaceChildren(...list.map((r, i) => routineCard(r, problems.find((p) => p.index === i)?.text || "")));
+}
+
+/** @param {RoutineDef} r @param {string} problem */
+function routineCard(r, problem) {
+  const card = Object.assign(document.createElement("section"), { className: "card as-rt" });
+  const row = Object.assign(document.createElement("div"), { className: "row" });
+  const name = Object.assign(document.createElement("input"), { className: "text-field as-rt-name", type: "text", value: r.name, maxLength: 40, placeholder: "Name, e.g. coding", spellcheck: false });
+  name.setAttribute("aria-label", "Routine name");
+  const del = Object.assign(document.createElement("button"), { className: "btn", type: "button", textContent: "Delete" });
+  del.addEventListener("click", () => {
+    card.remove();
+    $("as-rt-status").textContent = "Not saved yet.";
+  });
+  row.append(name, del);
+  const steps = Object.assign(document.createElement("textarea"), { value: r.phrases.join("\n"), placeholder: "One request a line, e.g.\nopen terminal\nopen firefox\nput terminal and firefox side by side", spellcheck: false });
+  steps.setAttribute("aria-label", `Requests of ${r.name || "the routine"}, one a line`);
+  const note = Object.assign(document.createElement("div"), { className: "note", textContent: problem });
+  card.append(row, steps, note);
+  return card;
+}
+
+/** What the cards say now. @returns {RoutineDef[]} */
+function routinesOnScreen() {
+  return [...document.querySelectorAll("#as-routines .as-rt")].map((card) => ({
+    name: /** @type {HTMLInputElement} */ (card.querySelector(".as-rt-name")).value,
+    phrases: /** @type {HTMLTextAreaElement} */ (card.querySelector("textarea")).value.split("\n").map((l) => l.trim()).filter(Boolean),
+  }));
+}
+
+$("as-rt-add").addEventListener("click", () => {
+  const card = routineCard({ name: "", phrases: [] }, "");
+  $("as-routines").append(card);
+  /** @type {HTMLInputElement} */ (card.querySelector(".as-rt-name")).focus();
+});
+$("as-rt-save").addEventListener("click", async () => {
+  if (!tauri) return;
+  const list = routinesOnScreen();
+  const status = $("as-rt-status");
+  try {
+    /** @type {RoutineDef[]} */
+    const saved = await tauri.core.invoke("routines_save", { routines: list });
+    renderRoutines(saved, []);
+    status.classList.remove("error");
+    status.textContent = `Saved ${saved.length} routine${saved.length === 1 ? "" : "s"}.`;
+  } catch (e) {
+    // Which routine is wrong, and how (nothing was saved).
+    const problems = Array.isArray(e) ? e : [{ index: 0, text: String(e) }];
+    renderRoutines(list, problems);
+    status.classList.add("error");
+    status.textContent = "Not saved: see the routines marked in red.";
+  }
+});
+
+$("as-net").addEventListener("change", (e) => void setInternet(/** @type {HTMLSelectElement} */ (e.target).value, internet?.place || ""));
+$("as-town").addEventListener("change", (e) => void setInternet(internet?.mode || "always", /** @type {HTMLInputElement} */ (e.target).value));
+$("as-cloud-on").addEventListener("change", () => void setCloud(null));
+$("as-cloud-provider").addEventListener("change", () => {
+  // Another service: its own model, not the last one's.
+  /** @type {HTMLInputElement} */ ($("as-cloud-model")).value = "";
+  void setCloud(null);
+});
+$("as-cloud-model").addEventListener("change", () => void setCloud(null));
+$("as-cloud-key").addEventListener("change", (e) => {
+  const k = /** @type {HTMLInputElement} */ (e.target).value.trim();
+  if (k) void setCloud(k);
+});
+$("as-cloud-forget").addEventListener("click", () => void setCloud(""));
+$("as-cloud-test").addEventListener("click", () => void testCloud());
+// 20f
+for (const b of document.querySelectorAll("#as-tabs [data-tab]")) b.addEventListener("click", () => showAsTab(/** @type {HTMLElement} */ (b).dataset.tab || "general"));
+for (const t of document.querySelectorAll("#pane-assistant .as-tile")) t.addEventListener("click", () => showAsTab(/** @type {HTMLElement} */ (t).dataset.go || "general"));
+for (const c of document.querySelectorAll("#pane-assistant [data-try]")) c.addEventListener("click", () => trySiva(/** @type {HTMLElement} */ (c).dataset.try || ""));
+$("as-try-speak").addEventListener("click", () => void asCall("assistant_toggle"));
+$("as-try-type").addEventListener("click", () => trySiva(""));
+$("as-search").addEventListener("input", () => renderActivity());
+try {
+  const tab = localStorage.getItem("assistant-tab");
+  if (tab && document.querySelector(`#as-tabs [data-tab="${tab}"]`)) showAsTab(tab);
+} catch {
+  // A private window: the first tab.
+}
+$("as-hearing").addEventListener("change", async (e) => {
+  const st = await asCall("set_hearing", { hearing: /** @type {HTMLSelectElement} */ (e.target).value });
+  if (st) voice = st;
+  renderAssistant();
+});
+$("as-speak").addEventListener("change", async (e) => {
+  const st = await asCall("set_speak", { speak: /** @type {HTMLSelectElement} */ (e.target).value });
+  if (st) speech = st;
+  renderAssistant();
+});
+$("as-clear").addEventListener("click", () =>
+  ask("Clear Siva's activity?", "The list of what you asked and what it did is deleted from this PC.", [
+    ["Cancel", () => {}],
+    ["Clear", () => void asCall("assistant_activity_clear").then(loadActivity), true],
+  ]),
 );
 
 // ---- 12c: Sound (PipeWire; the menu bar's speaker and the volume keys change it too) ----
@@ -2064,6 +2543,10 @@ if (tauri) {
   tauri.event.listen("kompact-notify-prefs", (/** @type {{payload: NotifyPrefs}} */ e) => {
     nt = e.payload;
     renderNotify();
+  });
+  // 19c-2: a request it just handled.
+  tauri.event.listen("kompact-assistant-activity", () => {
+    if (paneShown === "assistant") void loadActivity();
   });
   // 12i-1
   tauri.event.listen("kompact-idle", (/** @type {{payload: {awake?: string[]}}} */ e) => {

@@ -69,6 +69,12 @@
           </span>
           Control Center
         </button></li>
+        <li><button class="pane" data-pane="assistant">
+          <span class="pane-icon assistant" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 1.8 9.5 6.5 14.2 8 9.5 9.5 8 14.2 6.5 9.5 1.8 8 6.5 6.5z" fill="currentColor"/></svg>
+          </span>
+          Assistant
+        </button></li>
         <li><button class="pane" data-pane="datetime">
           <span class="pane-icon datetime" aria-hidden="true">
             <svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>
@@ -169,6 +175,7 @@
         <div class="row"><span class="row-label" id="cc-input-label">Keyboard layout<span class="hint">When active: with two layouts or more.</span></span><select id="cc-input" class="select cc-select" data-item="input" aria-labelledby="cc-input-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
         <div class="row"><span class="row-label" id="cc-spaces-label">Desktops<span class="hint">When active: away from Desktop 1, or with windows on other desktops.</span></span><select id="cc-spaces" class="select cc-select" data-item="spaces" aria-labelledby="cc-spaces-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
         <div class="row"><span class="row-label" id="cc-spotlight-label">Spotlight<span class="hint">Also with its shortcut.</span></span><select id="cc-spotlight" class="select cc-select" data-item="spotlight" aria-labelledby="cc-spotlight-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
+        <div class="row"><span class="row-label" id="cc-assistant-label">Siva<span class="hint">The assistant: click it and speak. Its wave moves while it listens.</span></span><select id="cc-assistant" class="select cc-select" data-item="assistant" aria-labelledby="cc-assistant-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
       </section>
       <p class="note-text">If the menu bar runs out of room, Desktops, Spotlight, Keyboard layout, Sound, Bluetooth and Network fold away in that order. Screen sharing, the microphone dot and Do Not Disturb show while they're on.</p>
       <p id="cc-status" class="status" role="status" aria-live="polite"></p>
@@ -397,6 +404,133 @@
       <h2 class="group-title">Apps</h2>
       <section class="card" id="nt-apps"></section>
       <p id="nt-status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- 19c-2, 19h: Siva, the assistant (src-tauri/src/assistant/). -->
+    <main class="content" id="pane-assistant" hidden>
+      <header class="head" data-drag>
+        <h1>Assistant</h1>
+        <p class="sub">Siva does what you ask: click its ring in the menu bar and speak, or type. What it hears is turned into text on this PC and never kept; it goes online only as the Internet tab allows.</p>
+      </header>
+      <!-- 20f: the overview -->
+      <section class="as-overview" aria-label="Siva now">
+        <div class="as-tiles">
+          <button class="as-tile" id="as-t-hear" data-go="general" type="button"><span class="as-dot"></span><span class="as-t-name">Hearing</span><span class="as-t-detail">…</span></button>
+          <button class="as-tile" id="as-t-speak" data-go="general" type="button"><span class="as-dot"></span><span class="as-t-name">Speaking</span><span class="as-t-detail">…</span></button>
+          <button class="as-tile" id="as-t-think" data-go="understanding" type="button"><span class="as-dot"></span><span class="as-t-name">Understanding</span><span class="as-t-detail">…</span></button>
+          <button class="as-tile" id="as-t-net" data-go="internet" type="button"><span class="as-dot"></span><span class="as-t-name">Internet</span><span class="as-t-detail">…</span></button>
+        </div>
+        <div class="as-try">
+          <div class="as-try-buttons"><button id="as-try-speak" class="btn primary" type="button">Speak to Siva</button><button id="as-try-type" class="btn" type="button">Type to Siva…</button></div>
+          <div class="as-chips" aria-label="Try">
+            <button class="as-chip" type="button" data-try="what's the weather">What's the weather</button>
+            <button class="as-chip" type="button" data-try="volume 30">Volume 30</button>
+            <button class="as-chip" type="button" data-try="put firefox and files side by side">Firefox and Files side by side</button>
+            <button class="as-chip" type="button" data-try="write a short joke in text editor">Write a joke in Text Editor</button>
+            <button class="as-chip" type="button" data-try="news about technology">Tech news</button>
+            <button class="as-chip" type="button" data-try="why is my computer slow">Why is it slow?</button>
+            <button class="as-chip" type="button" data-try="help">What can you do?</button>
+          </div>
+        </div>
+      </section>
+      <div class="as-tabs-wrap"><div id="as-tabs" class="segmented as-tabs" role="tablist" aria-label="Assistant settings">
+        <button type="button" role="tab" data-tab="general" aria-checked="true">General</button>
+        <button type="button" role="tab" data-tab="understanding" aria-checked="false">Understanding</button>
+        <button type="button" role="tab" data-tab="internet" aria-checked="false">Internet</button>
+        <button type="button" role="tab" data-tab="permissions" aria-checked="false">Permissions</button>
+        <button type="button" role="tab" data-tab="routines" aria-checked="false">Routines</button>
+        <button type="button" role="tab" data-tab="learning" aria-checked="false">Learning</button>
+        <button type="button" role="tab" data-tab="activity" aria-checked="false">Activity</button>
+      </div></div>
+      <div class="as-tab" data-tab="general" role="tabpanel">
+        <section class="card">
+          <div class="row"><span class="row-label" id="as-menubar-label">In the menu bar<span class="hint">The ring turns into a sound wave while it listens. Control Center has the same choice.</span></span><select id="as-menubar" class="select cc-select" data-item="assistant" aria-labelledby="as-menubar-label"><option value="always">Show in Menu Bar</option><option value="active">Show When Active</option><option value="never">Don't Show</option></select></div>
+        </section>
+        <h2 class="group-title">Voice</h2>
+        <section class="card">
+          <div class="row"><span class="row-label">Click the ring and speak; it knows when you've finished<span class="hint" id="as-voice">…</span></span></div>
+          <div class="row"><span class="row-label" id="as-hearing-label">Hearing<span class="hint" id="as-hearing-hint">…</span></span><select id="as-hearing" class="select" aria-labelledby="as-hearing-label"><option value="accurate">Accurate</option><option value="fast">Fast</option></select></div>
+          <div class="row"><span class="row-label" id="as-speak-label">Speak replies<span class="hint" id="as-speech">…</span></span><select id="as-speak" class="select" aria-labelledby="as-speak-label"><option value="voice">When I speak</option><option value="always">Always</option><option value="never">Never</option></select></div>
+        </section>
+      </div>
+      <div class="as-tab" data-tab="understanding" role="tabpanel" hidden>
+        <h2 class="group-title">Understanding</h2>
+        <section class="card">
+          <div class="row"><span class="row-label">Built-in rules, at once<span class="hint">“volume 30”, “dark mode”, “open firefox”, “put firefox and files side by side”, routines.</span></span></div>
+          <div class="row"><span class="row-label">A small AI model on this PC, for the rest<span class="hint" id="as-model">…</span></span></div>
+        </section>
+        <!-- 20d-2 -->
+        <h2 class="group-title">Cloud AI</h2>
+        <section class="card">
+          <label class="row"><span class="row-label">Use a cloud AI<span class="hint" id="as-cloud-hint">Optional. With your own key, a cloud AI understands and talks in place of the small model on this PC. It's given only your words, never your windows, files or screen, and Siva still asks before anything drastic. Only while Internet is Always.</span></span><input id="as-cloud-on" class="switch" type="checkbox" role="switch"></label>
+          <div class="row"><span class="row-label" id="as-cloud-provider-label">Service</span><select id="as-cloud-provider" class="select" aria-labelledby="as-cloud-provider-label"></select></div>
+          <div class="row"><label class="row-label" for="as-cloud-model">Model<span class="hint">Leave it empty for the service's own.</span></label><input id="as-cloud-model" class="text-field" type="text" maxlength="120" autocomplete="off" spellcheck="false"></div>
+          <div class="row"><label class="row-label" for="as-cloud-key">Key<span class="hint" id="as-cloud-key-hint">From the service's website. Kept in your home folder, readable by you alone.</span></label><input id="as-cloud-key" class="text-field" type="password" maxlength="300" autocomplete="off" spellcheck="false"></div>
+          <div class="row"><span class="row-label">Try it<span class="hint" id="as-cloud-result"></span></span><button id="as-cloud-forget" class="btn">Forget Key</button><button id="as-cloud-test" class="btn">Test</button></div>
+        </section>
+      </div>
+      <div class="as-tab" data-tab="internet" role="tabpanel" hidden>
+        <!-- 20d -->
+        <h2 class="group-title">Internet</h2>
+        <section class="card">
+          <div class="row"><span class="row-label" id="as-net-label">Look things up online<span class="hint" id="as-net-hint">The weather, the news (by topic too), facts and search results, from free services: Open-Meteo, Google News, Wikipedia, DuckDuckGo. Only what you ask about is sent; never your voice, windows or files.</span></span><select id="as-net" class="select" aria-labelledby="as-net-label"><option value="always">Always</option><option value="ask">Ask Each Time</option><option value="off">Off</option></select></div>
+          <div class="row"><label class="row-label" for="as-town">Your town<span class="hint" id="as-town-hint">For “what's the weather” and local news. You can also say “I live in Chennai”.</span></label><input id="as-town" class="text-field" type="text" maxlength="80" autocomplete="off" spellcheck="false"></div>
+        </section>
+      </div>
+      <div class="as-tab" data-tab="permissions" role="tabpanel" hidden>
+        <h2 class="group-title">What it may do</h2>
+        <section class="card">
+          <div class="row"><span class="row-label">Volume, music, windows, desktops, Wi-Fi, Bluetooth, Do Not Disturb, dark mode, opening apps, typing and writing into apps<span class="hint">Done at once; most have Undo.</span></span></div>
+          <div class="row"><span class="row-label">Closing windows, logging out, sleep, restart, power off; typing into a terminal; keys that quit an app or delete for good<span class="hint">It asks first, every time, and only a click on its button says yes; saying “yes” doesn't.</span></span></div>
+          <div class="row"><span class="row-label">Going online<span class="hint">As the Internet tab says: always, after asking, or never. Online it only reads.</span></span></div>
+          <div class="row"><span class="row-label">Anything else<span class="hint">It can't: no reading your files, no passwords, no installing.</span></span></div>
+        </section>
+      </div>
+      <div class="as-tab" data-tab="routines" role="tabpanel" hidden>
+        <!-- 19e -->
+        <h2 class="group-title">Routines</h2>
+        <p class="sub as-rt-sub">Several requests under one name. Say “set up for coding”, “start focus” or “movie time”; the plan shows as it runs, and one Undo takes it all back.</p>
+        <div id="as-routines"></div>
+        <div class="as-rt-actions">
+          <button id="as-rt-add" class="btn" type="button">Add Routine</button>
+          <button id="as-rt-save" class="btn primary" type="button">Save Routines</button>
+        </div>
+        <p id="as-rt-status" class="status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="as-tab" data-tab="learning" role="tabpanel" hidden>
+        <!-- 19j -->
+        <h2 class="group-title">Learn my voice</h2>
+        <p class="sub as-rt-sub">Siva can't retrain its hearing here, but it learns how it mishears you (“open permanent” for “open terminal”) and puts that right every time, before anything reads it.</p>
+        <section class="card">
+          <div class="row"><span class="row-label">Training<span class="hint" id="lv-train-hint">Read 22 short phrases aloud; for each, Siva keeps what it heard. A few minutes, and again any time.</span></span><button id="lv-start" class="btn" type="button">Start Training</button></div>
+          <div id="lv-train" class="lv-train" hidden>
+            <div class="lv-say"><span class="muted" id="lv-count"></span> Say: <strong id="lv-phrase"></strong></div>
+            <div id="lv-heard" class="lv-heard" role="status" aria-live="polite"></div>
+            <div class="lv-buttons">
+              <button id="lv-listen" class="btn primary" type="button">Listen</button>
+              <button id="lv-skip" class="btn" type="button">Skip</button>
+              <button id="lv-stop" class="btn" type="button">Stop</button>
+            </div>
+          </div>
+          <div class="row"><span class="row-label">In everyday use<span class="hint">When it mishears you, click ✎ beside what it heard and type what you said: it does that, and remembers.</span></span></div>
+        </section>
+        <section class="card">
+          <div class="row"><span class="row-label">Your words<span class="hint">Names you use, one a line (apps, routines, places): it spells them your way.</span></span><button id="lv-words-save" class="btn" type="button">Save</button></div>
+          <textarea id="lv-words" class="lv-words" spellcheck="false" aria-label="Your words, one a line" placeholder="Ptyxis&#10;VS Code"></textarea>
+        </section>
+        <section class="card" id="lv-list"></section>
+        <div class="as-rt-actions"><button id="lv-clear" class="btn" type="button">Forget All…</button></div>
+        <p id="lv-status" class="status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="as-tab" data-tab="activity" role="tabpanel" hidden>
+        <div class="as-search-row"><input id="as-search" class="text-field as-search" type="search" placeholder="Search what you asked and what it did" aria-label="Search the activity" autocomplete="off" spellcheck="false"></div>
+        <h2 class="group-title">Activity</h2>
+        <section class="card">
+          <div class="row"><span class="row-label">What you asked and what it did<span class="hint path" id="as-file">Kept only on this PC, in ~/.local/state/kompact/assistant.log</span></span><button id="as-clear" class="btn">Clear…</button></div>
+        </section>
+        <section class="card" id="as-list"></section>
+        <p id="as-status" class="status" role="status" aria-live="polite"></p>
+      </div>
     </main>
 
     <!-- 12c: PipeWire (src-tauri/src/sound.rs). -->
