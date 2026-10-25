@@ -16,7 +16,7 @@ use tracing::info;
 use super::activity::{self, Kind};
 use super::policy::{self, Decision, Proposal};
 use super::rules::{self, Parsed, Step};
-use super::work;
+use super::{agent, work};
 use crate::compositor::Compositor;
 
 // ---- matching names (pure) ----
@@ -285,6 +285,7 @@ enum Undo {
 }
 
 /// A request waiting on a confirmation card: its steps, how far it got, what it said so far.
+/// 21b: or a task of the work loop, with its whole conversation (`steps` empty).
 struct Waiting {
     id: u64,
     steps: Vec<Step>,
@@ -293,6 +294,7 @@ struct Waiting {
     undo: Vec<Undo>,
     /// 19d: shown again when a spoken "yes" can't answer it.
     card: Card,
+    agent: Option<Box<AgentRun>>,
 }
 
 #[derive(Default)]
@@ -1223,7 +1225,7 @@ fn wait_on_card(app: &AppHandle, steps: &[Step], i: usize, said: Vec<String>, un
     let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
     let card = Card { id, text: text.clone(), button, plain };
     state.with(|inner| {
-        inner.waiting.push(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() });
+        inner.waiting.push(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone(), agent: None });
         let extra = inner.waiting.len().saturating_sub(6);
         inner.waiting.drain(..extra);
     });
@@ -1507,6 +1509,270 @@ fn fill_in_it(steps: &mut [Step], last: Option<&str>) {
     }
 }
 
+// ---- 21b: the work loop ----
+
+/// A task of the work loop, as far as it got.
+struct AgentRun {
+    prefs: super::cloud::Prefs,
+    convo: agent::Convo,
+    /// The calls of the model's last answer not yet done (the first may wait on a card).
+    pending: std::collections::VecDeque<agent::Call>,
+    /// What the calls done so far did, by id, for the next request.
+    results: Vec<(String, String)>,
+    calls: usize,
+    items: Vec<PlanItem>,
+    undo: Vec<Undo>,
+    /// Something from the internet is in the conversation (`agent::taints`).
+    tainted: bool,
+}
+
+enum Check {
+    Run(Vec<Step>),
+    Ask(String, String, bool),
+    Refuse(String),
+}
+
+/// The plan line for a call.
+fn describe_call(c: &agent::Call) -> String {
+    if c.name == agent::DESKTOP {
+        return format!("“{}”", c.args["request"].as_str().unwrap_or(""));
+    }
+    match super::tools::find(&c.name) {
+        Some(t) => rules::describe(&Step { tool: t.name, args: c.args.clone() }),
+        None => c.name.clone(),
+    }
+}
+
+/// Whether `s` could send something out (asked first once the internet is in the task).
+fn sends_out(s: &Step) -> bool {
+    match s.tool {
+        "open_link" | "search_web" => true,
+        "run_command" => {
+            let cmd = s.args["command"].as_str().unwrap_or("");
+            work::programs(cmd).iter().any(|p| work::SENDS.contains(&p.as_str())) || cmd.contains("git push")
+        }
+        _ => false,
+    }
+}
+
+/// 21b: what to do with one of the model's calls: the same checks as every step (unknown tools
+/// and bad details refused; Tier 2, the internet as Settings allows, typing into terminals,
+/// drastic commands and files asking first), and, once something from the internet is in the
+/// task, steps that could send something out ask too. `confirmed`: its card was clicked.
+async fn agent_check(app: &AppHandle, call: &agent::Call, tainted: bool, confirmed: bool, ctx: &mut Ctx) -> Check {
+    let steps: Vec<Step> = if call.name == agent::DESKTOP {
+        let req = call.args["request"].as_str().unwrap_or("").trim().to_string();
+        match rules::parse(&req) {
+            Parsed::Steps(s) if !s.is_empty() && s.iter().all(|s| !super::tools::WORK.contains(&s.tool)) => s,
+            _ => return Check::Refuse(format!("Siva's rules don't know “{req}”. Use another tool, or say it more simply.")),
+        }
+    } else {
+        let Some(t) = super::tools::find(&call.name).filter(|t| agent::TOOLSET.contains(&t.name)) else {
+            return Check::Refuse(format!("There's no tool called {}.", call.name));
+        };
+        if let Err(e) = t.validate(&call.args) {
+            return Check::Refuse(format!("{}: {e}.", t.name));
+        }
+        vec![Step { tool: t.name, args: call.args.clone() }]
+    };
+    for s in &steps {
+        let proposal = Proposal { tool: s.tool.to_string(), args: s.args.clone(), from_untrusted: false };
+        match policy::decide(&proposal, 0) {
+            Decision::Refuse(r) => return Check::Refuse(r.to_string()),
+            Decision::Confirm { .. } if !confirmed => {
+                let (text, button) = confirm_text(s.tool, &s.args, s.args.get("window").and_then(Value::as_str));
+                return Check::Ask(text, button, false);
+            }
+            _ => {}
+        }
+        if super::web::online(s.tool) {
+            match super::web::load_prefs().mode {
+                super::web::Mode::Off => return Check::Refuse("I'm not allowed online (Settings → Assistant → Internet is Off).".into()),
+                super::web::Mode::Ask if !confirmed => {
+                    let what = rules::describe(s);
+                    let what = what.chars().next().map(|f| f.to_lowercase().chain(what.chars().skip(1)).collect::<String>()).unwrap_or_default();
+                    return Check::Ask(format!("May I go online to {what}?"), "Go Online".into(), true);
+                }
+                _ => {}
+            }
+        }
+        if confirmed {
+            continue;
+        }
+        if matches!(s.tool, "type_text" | "write_text" | "press_keys") {
+            match typing_window(app, s, ctx).await {
+                Ok(w) => {
+                    if let Some(why) = policy::typing_asks(s.tool, &s.args, policy::is_terminal(&w.app_id, &w.name, &w.about)) {
+                        return Check::Ask(format!("{} in {}? {why}", rules::describe(s), w.name), "Go Ahead".into(), false);
+                    }
+                }
+                Err(e) => return Check::Refuse(e),
+            }
+        }
+        if let Some((text, button)) = work_asks(s) {
+            return Check::Ask(text, button.into(), false);
+        }
+        if tainted && sends_out(s) {
+            return Check::Ask(format!("{}? It follows from something I read online.", rules::describe(s)), "Go Ahead".into(), false);
+        }
+    }
+    Check::Run(steps)
+}
+
+fn emit_items(app: &AppHandle, items: &[PlanItem]) {
+    let _ = app.emit("kompact-assistant-plan", json!({"task": current_task(), "items": items}));
+}
+
+/// The task's last words, with its plan and one Undo for all it changed.
+fn agent_done(app: &AppHandle, run: AgentRun, text: String, mood: &'static str) -> Reply {
+    // gpt-oss writes narrow no-break spaces between words.
+    let text = text.replace(['\u{202f}', '\u{a0}'], " ");
+    info!("agent: done after {} calls: {text:?}", run.calls);
+    activity::record(app, if mood == "sorry" { Kind::Failed } else { Kind::Ran }, "", &format!("Task: {text}"));
+    let mut r = finish(app, vec![text], run.undo, false);
+    r.mood = mood;
+    r.plan = (!run.items.is_empty()).then_some(run.items);
+    r
+}
+
+/// The next answer, waiting (with a line in the plan) when the provider is rate-limited.
+async fn agent_ask(app: &AppHandle, run: &mut AgentRun) -> Result<(agent::Turn, Value), String> {
+    for _ in 0..=agent::RETRIES {
+        let (p, c) = (run.prefs.clone(), run.convo.clone());
+        match tauri::async_runtime::spawn_blocking(move || agent::ask(&p, &c)).await.map_err(|e| e.to_string())? {
+            Ok(r) => return Ok(r),
+            Err(agent::Failed::Other(e)) => return Err(e),
+            Err(agent::Failed::Wait(secs)) if secs > agent::LONGEST_WAIT => return Err(format!("{} is busy for {:.0} s more (its free limit)", run.prefs.provider().name, secs)),
+            Err(agent::Failed::Wait(secs)) => {
+                run.items.push(PlanItem { text: format!("Waiting {:.0} s for {} (its free limit)", secs.ceil(), run.prefs.provider().name), state: "now" });
+                emit_items(app, &run.items);
+                let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs + 0.5);
+                while std::time::Instant::now() < until {
+                    if stop_asked() {
+                        run.items.pop();
+                        return Err("stopped".into());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                run.items.pop();
+                emit_items(app, &run.items);
+            }
+        }
+    }
+    Err(format!("{} stayed busy", run.prefs.provider().name))
+}
+
+/// 21b: the loop: run the calls the model made, give it what happened, ask again, until it
+/// answers in words (or Stop, a card's Cancel, `MAX_CALLS`).
+async fn agent_loop(app: &AppHandle, mut run: AgentRun, mut confirmed: bool) -> Reply {
+    let mut ctx = Ctx::default();
+    loop {
+        if stop_asked() {
+            info!("agent: stopped after {} calls", run.calls);
+            return agent_done(app, run, "Stopped.".into(), "happy");
+        }
+        if let Some(call) = run.pending.pop_front() {
+            if run.calls >= agent::MAX_CALLS {
+                return agent_done(app, run, format!("I stopped after {} steps; the task may not be finished.", agent::MAX_CALLS), "sorry");
+            }
+            // Back from a card: its line is there already.
+            if run.items.last().is_some_and(|i| i.state == "asks") {
+                run.items.last_mut().unwrap().state = "now";
+            } else {
+                run.items.push(PlanItem { text: describe_call(&call), state: "now" });
+            }
+            emit_items(app, &run.items);
+            let check = agent_check(app, &call, run.tainted, confirmed, &mut ctx).await;
+            confirmed = false;
+            match check {
+                Check::Refuse(why) => {
+                    info!("agent: refused {}: {why}", call.name);
+                    activity::record(app, Kind::Refused, "", &format!("{}: {why}", call.name));
+                    run.items.last_mut().unwrap().state = "failed";
+                    run.results.push((call.id.clone(), format!("Not done: {why}")));
+                }
+                Check::Ask(text, button, plain) => {
+                    run.items.last_mut().unwrap().state = "asks";
+                    emit_items(app, &run.items);
+                    activity::record(app, Kind::AsksFirst, "", &text);
+                    info!("agent: asks first: {}", call.name);
+                    run.pending.push_front(call);
+                    let state = app.state::<Assistant>();
+                    let id = state.id();
+                    let card = Card { id, text: text.clone(), button, plain };
+                    let items = run.items.clone();
+                    state.with(|inner| {
+                        inner.waiting.push(Waiting { id, steps: Vec::new(), at: 0, said: Vec::new(), undo: Vec::new(), card: card.clone(), agent: Some(Box::new(run)) });
+                        let extra = inner.waiting.len().saturating_sub(6);
+                        inner.waiting.drain(..extra);
+                    });
+                    return Reply { confirm: Some(card), plan: Some(items), ..reply(text, "concerned") };
+                }
+                Check::Run(steps) => {
+                    run.calls += 1;
+                    let mut out = Vec::new();
+                    let mut ok = true;
+                    for s in &steps {
+                        match run_step(app, s, &mut ctx).await {
+                            Ok(d) => {
+                                info!("agent: ran {}", s.tool);
+                                activity::record(app, Kind::Ran, s.tool, &d.text);
+                                out.push(d.text);
+                                run.undo.extend(d.undo);
+                            }
+                            Err(e) => {
+                                info!("agent: {} failed: {e}", s.tool);
+                                activity::record(app, Kind::Failed, s.tool, &e);
+                                out.push(format!("Failed: {e}"));
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if steps.iter().any(|s| agent::taints(s.tool, &s.args)) {
+                        run.tainted = true;
+                    }
+                    run.items.last_mut().unwrap().state = if ok { "done" } else { "failed" };
+                    emit_items(app, &run.items);
+                    run.results.push((call.id.clone(), out.join("\n")));
+                }
+            }
+            continue;
+        }
+        if !run.results.is_empty() {
+            let r = std::mem::take(&mut run.results);
+            run.convo.push_results(&r);
+        }
+        run.convo.compact();
+        let (turn, back) = match agent_ask(app, &mut run).await {
+            Ok(t) => t,
+            Err(e) if e == "stopped" => return agent_done(app, run, "Stopped.".into(), "happy"),
+            Err(e) => return agent_done(app, run, format!("The cloud AI stopped helping: {e}."), "sorry"),
+        };
+        if turn.calls.is_empty() {
+            let text = turn.text.trim().to_string();
+            return agent_done(app, run, if text.is_empty() { "Done.".into() } else { text }, "happy");
+        }
+        run.convo.push_assistant(back);
+        run.pending.extend(turn.calls);
+    }
+}
+
+/// 21b: a task for the work loop on the cloud AI `p`.
+async fn work_on(app: &AppHandle, p: super::cloud::Prefs, text: &str) -> Reply {
+    let home = work::home().map(|h| h.display().to_string()).unwrap_or_else(|| "~".into());
+    let now = super::diagnose::now_text(crate::datetime::load_prefs().hour24);
+    let mut apps: Vec<String> = windows(app).into_iter().map(|w| w.name).collect();
+    apps.sort();
+    apps.dedup();
+    let shape = agent::shape_of(&p);
+    info!("agent: a task for {} {} ({} characters)", p.provider().id, p.model(), text.chars().count());
+    activity::record(app, Kind::Understood, "", &format!("A task for {}", p.provider().name));
+    let convo = agent::Convo::new(shape, agent::system_prompt(&home, &now, &apps), text.trim());
+    let run = AgentRun { prefs: p, convo, pending: Default::default(), results: Vec::new(), calls: 0, items: Vec::new(), undo: Vec::new(), tainted: false };
+    agent_loop(app, run, false).await
+}
+
 async fn request_inner(app: &AppHandle, text: &str) -> Reply {
     // 20c: cards waiting for other tasks stay (each is answered by its own id).
     // 19e: a routine ("set up for coding") before the rules ("start coding" would open an app).
@@ -1523,6 +1789,19 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
         };
     }
     let parsed = rules::parse(text);
+    // 21b: work on files, code and commands goes to the work loop, when the cloud AI is in use
+    // (what the rules do with only the work tools, like "run python3 hello.py", stays with them).
+    if let Some(p) = super::cloud::active() {
+        let work = agent::is_work(&rules::normalize(text))
+            && match &parsed {
+                Parsed::Steps(s) => !s.iter().all(|s| super::tools::WORK.contains(&s.tool)),
+                Parsed::Unknown(_) => true,
+                _ => false,
+            };
+        if work {
+            return work_on(app, p, text).await;
+        }
+    }
     // 20a: just a name ("Firefox"): what to do with it? (Never chat about it.)
     if matches!(parsed, Parsed::Unknown(_)) && rules::just_a_name(text) {
         if let Some(r) = clarify(app, text) {
@@ -1753,6 +2032,18 @@ async fn answer(app: &AppHandle, id: u64, confirm: bool) -> Reply {
     let app = app.clone();
     let waiting = app.state::<Assistant>().with(|i| i.waiting.iter().position(|w| w.id == id).map(|p| i.waiting.remove(p)));
     let Some(w) = waiting else { return reply("That question has gone; ask me again.", "sorry") };
+    // 21b: a step of the work loop: on with it, or the task stops here.
+    if let Some(run) = w.agent {
+        let tool = run.pending.front().map(|c| c.name.clone()).unwrap_or_default();
+        if !confirm {
+            info!("agent: cancelled {tool}");
+            activity::record(&app, Kind::Cancelled, "", &format!("{tool}: not done"));
+            return agent_done(&app, *run, "Okay, I won't. I stopped the task there.".into(), "happy");
+        }
+        info!("agent: confirmed {tool} (clicked)");
+        activity::record(&app, Kind::Confirmed, "", &format!("{tool}: clicked"));
+        return agent_loop(&app, *run, true).await;
+    }
     if !confirm {
         info!("assistant: cancelled {}", w.steps[w.at].tool);
         activity::record(&app, Kind::Cancelled, w.steps[w.at].tool, "Not done");

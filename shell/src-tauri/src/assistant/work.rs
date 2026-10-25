@@ -77,6 +77,9 @@ pub fn file_asks(path: &Path, home: &Path) -> Option<&'static str> {
 
 // ---- commands (pure) ----
 
+/// 21b: programs that can send something out (asked first once the internet is in a task).
+pub const SENDS: &[&str] = &["curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "rsync", "ftp", "telnet", "socat"];
+
 /// Programs that ask first, whatever they're given: more power, deleting, disks, the session.
 const ASKS: &[(&str, &str)] = &[
     ("sudo", "It runs as the administrator."),

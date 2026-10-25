@@ -243,22 +243,20 @@ fn arg_schema(param: &Param) -> Value {
     s
 }
 
+/// One tool as JSON Schema (name, description, parameters).
+pub fn schema_of(t: &Tool) -> Value {
+    let props: Map<String, Value> = t.params.iter().map(|p| (p.name.to_string(), arg_schema(p))).collect();
+    let required: Vec<&str> = t.params.iter().filter(|p| p.required).map(|p| p.name).collect();
+    json!({
+        "name": t.name,
+        "description": t.about,
+        "parameters": {"type": "object", "properties": props, "required": required, "additionalProperties": false},
+    })
+}
+
 /// The tools as JSON Schema (name, description, parameters), for a local model (19f).
 pub fn schema() -> Value {
-    Value::Array(
-        TOOLS
-            .iter()
-            .map(|t| {
-                let props: Map<String, Value> = t.params.iter().map(|p| (p.name.to_string(), arg_schema(p))).collect();
-                let required: Vec<&str> = t.params.iter().filter(|p| p.required).map(|p| p.name).collect();
-                json!({
-                    "name": t.name,
-                    "description": t.about,
-                    "parameters": {"type": "object", "properties": props, "required": required, "additionalProperties": false},
-                })
-            })
-            .collect(),
-    )
+    Value::Array(TOOLS.iter().map(schema_of).collect())
 }
 
 #[cfg(test)]
