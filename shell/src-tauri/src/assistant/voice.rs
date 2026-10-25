@@ -129,7 +129,8 @@ pub fn tidy(out: &str) -> Option<String> {
 
 /// whisper sometimes writes the same sentence twice ("Why you care? Why you care?"): once.
 fn unrepeated(text: &str) -> String {
-    let parts: Vec<&str> = text.split(['.', '?', '!']).map(str::trim).filter(|p| !p.is_empty()).collect();
+    // 20a: commas too ("Firefox on left side, Firefox on left side,").
+    let parts: Vec<&str> = text.split(['.', '?', '!', ',']).map(str::trim).filter(|p| !p.is_empty()).collect();
     let key = |p: &str| p.to_lowercase().replace(',', "");
     if parts.len() >= 2 && parts.iter().all(|p| key(p) == key(parts[0])) {
         parts[0].to_string()
@@ -537,6 +538,8 @@ mod tests {
         assert_eq!(tidy(" Why you care? Why you care?").as_deref(), Some("Why you care"));
         assert_eq!(tidy(" Matching my terminals. Matching my terminals").as_deref(), Some("Matching my terminals"));
         assert_eq!(tidy(" Volume 30. Dark mode.").as_deref(), Some("Volume 30. Dark mode"), "different sentences stay");
+        assert_eq!(tidy(" Firefox on left side, Firefox on left side,").as_deref(), Some("Firefox on left side"));
+        assert_eq!(tidy(" Volume 30, dark mode").as_deref(), Some("Volume 30, dark mode"));
     }
 
     /// whisper-cli on a real recording: `KOMPACT_VOICE_SAMPLE=<16 kHz mono WAV> cargo test

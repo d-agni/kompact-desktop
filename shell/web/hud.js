@@ -27,7 +27,7 @@ const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext("2d"));
 
 /** @typedef {"hidden" | "waking" | "listening" | "thinking" | "reply" | "typing"} State */
 /** @typedef {{text: string, state: string}} PlanItem */
-/** @typedef {{text: string, mood: string, undo: number | null, confirm: {id: number, text: string, button: string} | null, plan?: PlanItem[] | null}} Reply */
+/** @typedef {{text: string, mood: string, undo: number | null, confirm: {id: number, text: string, button: string} | null, plan?: PlanItem[] | null, choices?: {label: string, request: string}[]}} Reply */
 
 /** @type {State} */
 let state = "hidden";
@@ -125,20 +125,28 @@ async function openType(prefill, fix) {
   if (my === session) typeInput.focus();
 }
 
-typeForm.addEventListener("submit", async (e) => {
+typeForm.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = typeInput.value.trim();
   if (!text) return;
+  const heard = fixing || null;
+  fixing = "";
+  void askText(text, heard);
+});
+
+/** A request as if typed (the Type box, or a question's button, 20a). @param {string} text
+ * @param {string | null} [heard] what was heard, when this puts it right (19j) */
+async function askText(text, heard = null) {
   const my = ++session;
   void keyboard(false);
   typeForm.hidden = true;
+  reset();
+  lastRaw = "";
   heardEl.textContent = `“${text}”`;
   setState("thinking", "WORKING");
-  const heard = fixing || null;
-  fixing = "";
   const r = await invoke("assistant_ask", { text, heard });
   if (my === session) showReply(r);
-});
+}
 typeInput.addEventListener("keydown", (e) => {
   if (e.key === "Escape") close();
 });
@@ -165,6 +173,14 @@ function showReply(r) {
     hideTimer = setTimeout(() => {
       if (card === c.id) answer(c.id, false);
     }, 30000);
+    return;
+  }
+  // 20a: a question's answers ("What should I do with Firefox?").
+  const choices = r.choices || [];
+  if (choices.length) {
+    buttonsEl.append(...choices.map((c) => button(c.label, "", () => void askText(c.request))));
+    setState("reply", "");
+    hideIn(15000);
     return;
   }
   const undoId = r.undo;

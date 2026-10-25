@@ -97,8 +97,8 @@ pub const TOOLS: &[Tool] = &[
     Tool { name: "lock_screen", about: "Lock the screen.", tier: Tier::Reversible, undo: false, params: &[] },
     // ---- Tier 2: consequential, asks every time ----
     Tool { name: "close_window", about: "Close a window. Its app may lose unsaved work.", tier: Tier::Consequential, undo: false, params: &[p("window", WINDOW, "its title or app")] },
-    Tool { name: "wifi", about: "Turn Wi-Fi on or off.", tier: Tier::Consequential, undo: true, params: &[p("on", ON, "")] },
-    Tool { name: "bluetooth", about: "Turn Bluetooth on or off (disconnects its devices).", tier: Tier::Consequential, undo: true, params: &[p("on", ON, "")] },
+    Tool { name: "wifi", about: "Turn Wi-Fi on or off.", tier: Tier::Reversible, undo: true, params: &[p("on", ON, "")] },
+    Tool { name: "bluetooth", about: "Turn Bluetooth on or off (disconnects its devices).", tier: Tier::Reversible, undo: true, params: &[p("on", ON, "")] },
     Tool { name: "log_out", about: "Log out (closes every app).", tier: Tier::Consequential, undo: false, params: &[] },
     Tool { name: "power", about: "Sleep, restart or power off the computer.", tier: Tier::Consequential, undo: false, params: &[p("action", Arg::OneOf(&["sleep", "restart", "power-off"]), "")] },
 ];
@@ -231,7 +231,8 @@ mod tests {
             assert!(TOOLS.iter().all(|t| !t.name.contains(word)), "a tool named after {word}");
         }
         // The ones that lose work or end the session ask first.
-        for name in ["close_window", "log_out", "power", "wifi", "bluetooth"] {
+        // 20a (2026-10-25): only the drastic ones; Wi-Fi and Bluetooth run at once, with Undo.
+        for name in ["close_window", "log_out", "power"] {
             assert_eq!(find(name).unwrap().tier, Tier::Consequential, "{name}");
         }
     }

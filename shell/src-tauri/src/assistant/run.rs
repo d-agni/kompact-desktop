@@ -121,6 +121,15 @@ pub struct Reply {
     pub confirm: Option<Card>,
     /// 19e: a request of several steps, each with how it went.
     pub plan: Option<Vec<PlanItem>>,
+    /// 20a: a question's answers as buttons, each a request ("What should I do with Firefox?"
+    /// Open · Bring Up · Maximize · Close).
+    pub choices: Vec<Choice>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Choice {
+    pub label: String,
+    pub request: String,
 }
 
 /// 19e: one line of a plan: `todo`, `now`, `done`, `failed`, `asks` (waits on a card),
@@ -190,7 +199,7 @@ pub struct Card {
 }
 
 fn reply(text: impl Into<String>, mood: &'static str) -> Reply {
-    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None }
+    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None, choices: Vec::new() }
 }
 
 const HELP: &str = "Try: “volume 30”, “dark mode”, “open Firefox”, “put Firefox and Terminal side by side”, \
@@ -223,9 +232,6 @@ struct Waiting {
     undo: Vec<Undo>,
     /// 19d: shown again when a spoken "yes" can't answer it.
     card: Card,
-    /// 19f: the card asks about a whole plan the model made ("Did you mean …?"), not one step:
-    /// a click runs the plan, and its Tier 2 steps still ask on their own.
-    whole_plan: bool,
 }
 
 #[derive(Default)]
@@ -755,8 +761,8 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
                 let prefix = said.join(" ");
                 let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
                 let card = Card { id, text: text.clone(), button };
-                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone(), whole_plan: false }));
-                return Reply { text, mood: "concerned", undo: None, confirm: Some(card), plan: None };
+                state.with(|inner| inner.waiting = Some(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() }));
+                return Reply { text, mood: "concerned", undo: None, confirm: Some(card), plan: None, choices: Vec::new() };
             }
             Decision::Confirm { .. } | Decision::Run { .. } => {
                 confirmed = false;
@@ -852,6 +858,26 @@ async fn talk(app: &AppHandle, text: &str) -> Reply {
     }
 }
 
+/// 20a: the app or window `text` names, if any: "What should I do with Firefox?" with buttons for
+/// what can be done to it (Open when none is open; Bring Up, Maximize, Minimize, Close when one
+/// is).
+fn clarify(app: &AppHandle, text: &str) -> Option<Reply> {
+    let words = rules::normalize(text);
+    let open: Vec<WinCand> = windows(app);
+    let apps: Vec<AppCand> = app.state::<crate::overlay::Overlay>().apps().into_iter().map(|a| AppCand { about: String::new(), id: a.id, name: a.name }).collect();
+    let name = rules::named_in(&words, &apps.iter().map(|a| a.name.as_str()).chain(open.iter().map(|w| w.name.as_str())).collect::<Vec<_>>())?;
+    let has_window = open.iter().any(|w| rules::normalize(&w.name) == rules::normalize(&name));
+    let key = rules::normalize(&name);
+    let choice = |label: &str, verb: &str| Choice { label: label.into(), request: format!("{verb} {key}") };
+    let choices = if has_window {
+        vec![choice("Bring Up", "bring up"), choice("Maximize", "maximize"), choice("Minimize", "minimize"), choice("Close", "close")]
+    } else {
+        vec![choice("Open", "open")]
+    };
+    info!("assistant: asked back what to do with {name}");
+    Some(Reply { choices, ..reply(format!("What should I do with {name}?"), "speaking") })
+}
+
 /// 19k: "it", "that", "this one" from an earlier request: the window or app named last.
 fn fill_in_it(steps: &mut [Step], last: Option<&str>) {
     let Some(last) = last else { return };
@@ -883,7 +909,14 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
             Err(p) => reply(format!("The {} routine has a request I don't understand: “{p}”. Fix it in Settings → Assistant.", r.name), "sorry"),
         };
     }
-    match rules::parse(text) {
+    let parsed = rules::parse(text);
+    // 20a: just a name ("Firefox"): what to do with it? (Never chat about it.)
+    if matches!(parsed, Parsed::Unknown(_)) && rules::just_a_name(text) {
+        if let Some(r) = clarify(app, text) {
+            return r;
+        }
+    }
+    match parsed {
         Parsed::Hello => reply("Vanakkam! What can I do for you?", "happy"),
         Parsed::Help => reply(HELP, "speaking"),
         Parsed::Talk(answer) => reply(answer, "speaking"),
@@ -925,6 +958,11 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
                 }
             }
             if steps.is_empty() {
+                // 20a: it names an app or a window: ask what to do with it, never chat about it
+                // (the chat once said "Firefox is open and maximized" and did nothing).
+                if let Some(r) = clarify(app, text) {
+                    return r;
+                }
                 // Nothing to do here after all: an answer in words (19k).
                 return talk(app, text).await;
             }
@@ -935,18 +973,9 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
                 activity::record(app, Kind::Understood, "", &guessed.join("; "));
             }
             let said: Vec<String> = missed.iter().map(|m| format!("I didn't get “{m}”.")).collect();
-            // A guess of more than two steps asks first (misheard words make those).
-            if guessed.len() <= 2 {
-                return proceed(app, steps, 0, said, Vec::new(), false).await;
-            }
-            let lines: Vec<String> = steps.iter().map(rules::describe).collect();
-            let state = app.state::<Assistant>();
-            let id = state.id();
-            info!("assistant: the model's plan asks first ({id}): {}", lines.join("; "));
-            let card = Card { id, text: format!("Did you mean: {}?", lines.join(", ")), button: "Do It".into() };
-            let plan = lines.into_iter().map(|text| PlanItem { text, state: "todo" }).collect();
-            state.with(|inner| inner.waiting = Some(Waiting { id, steps, at: 0, said, undo: Vec::new(), card: card.clone(), whole_plan: true }));
-            Reply { text: card.text.clone(), mood: "concerned", undo: None, confirm: Some(card), plan: Some(plan) }
+            // 20a: right away (only its steps about your words are left; the drastic ones still
+            // ask, in `run_steps`).
+            proceed(app, steps, 0, said, Vec::new(), false).await
         }
         Parsed::Unknown(part) => {
             activity::record(app, Kind::Refused, "", &format!("Didn't understand “{part}”"));
@@ -1066,7 +1095,7 @@ pub async fn assistant_heard(app: AppHandle, text: String) -> Reply {
             None => {
                 info!("assistant: a spoken yes can't confirm; the card stays");
                 let text = format!("I heard “{}”, but only a click on {} says yes to this.", text.trim(), card.button);
-                Reply { text: text.clone(), mood: "concerned", undo: None, confirm: Some(Card { text, ..card }), plan: None }
+                Reply { text: text.clone(), mood: "concerned", undo: None, confirm: Some(Card { text, ..card }), plan: None, choices: Vec::new() }
             }
         },
         (Some(policy::Spoken::No), None) if matches!(rules::parse(&text), Parsed::Unknown(_)) => reply("Okay. There's nothing to cancel.", "idle"),
@@ -1097,7 +1126,7 @@ async fn answer(app: &AppHandle, id: u64, confirm: bool) -> Reply {
     info!("assistant: confirmed {} (clicked)", w.steps[w.at].tool);
     STOP_PLAN.store(false, std::sync::atomic::Ordering::Relaxed);
     activity::record(&app, Kind::Confirmed, w.steps[w.at].tool, "Clicked");
-    proceed(&app, w.steps, w.at, w.said, w.undo, !w.whole_plan).await
+    proceed(&app, w.steps, w.at, w.said, w.undo, true).await
 }
 
 #[tauri::command]

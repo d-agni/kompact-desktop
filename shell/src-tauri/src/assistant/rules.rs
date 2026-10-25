@@ -294,6 +294,13 @@ fn clause(c: &str) -> Option<Vec<Step>> {
     if c.starts_with("switch to ") || c.starts_with("go to ") || c.starts_with("bring up ") || c.starts_with("show me ") {
         return name_after(&w, 2).map(|n| vec![step("focus_window", json!({"window": n}))]);
     }
+    // 20a: "bring terminal to the front", "bring firefox forward".
+    for tail in [" to the front", " to front", " forward", " in front"] {
+        if let Some(name) = c.strip_prefix("bring ").and_then(|r| r.strip_suffix(tail)) {
+            let n = name_after(&name.split_whitespace().collect::<Vec<_>>(), 0)?;
+            return Some(vec![step("focus_window", json!({"window": n}))]);
+        }
+    }
     // 19j: "bring firefox back".
     if let Some(name) = c.strip_prefix("bring ").and_then(|r| r.strip_suffix(" back")) {
         let n = name_after(&name.split_whitespace().collect::<Vec<_>>(), 0)?;
@@ -529,6 +536,24 @@ pub fn clauses(text: &str) -> Option<Vec<Result<Vec<Step>, String>>> {
     (!parts.is_empty()).then_some(parts)
 }
 
+/// 20a: only a name, no action ("Firefox", "the terminal", "files please"): at most three
+/// words once the fillers go.
+pub fn just_a_name(text: &str) -> bool {
+    const FILLER: [&str; 9] = ["the", "my", "a", "app", "window", "please", "uh", "um", "siva"];
+    let c = normalize(text);
+    let words: Vec<&str> = c.split_whitespace().filter(|w| !FILLER.contains(w)).collect();
+    (1..=3).contains(&words.len())
+}
+
+/// 20a: the first of `names` (apps, windows) that `words` say, as whole words (the longest name
+/// first, so "text editor" before "editor"). As the name is written.
+pub fn named_in(words: &str, names: &[&str]) -> Option<String> {
+    let said = format!(" {} ", normalize(words));
+    let mut list: Vec<&str> = names.iter().copied().filter(|n| !normalize(n).is_empty()).collect();
+    list.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    list.into_iter().find(|n| said.contains(&format!(" {} ", normalize(n)))).map(str::to_string)
+}
+
 /// 19l: a remark, not a request ("there are 2 firefox open", "i like this song"): talked about,
 /// never acted on.
 pub fn is_remark(text: &str) -> bool {
@@ -729,6 +754,20 @@ mod tests {
         assert!(parts[0].is_ok());
         assert_eq!(parts[1].as_ref().unwrap_err(), "make it sparkle");
         assert!(clauses("hello").is_none());
+    }
+
+    #[test]
+    fn asking_back() {
+        assert!(just_a_name("Firefox"));
+        assert!(just_a_name("the terminal please"));
+        assert!(!just_a_name("open firefox and put it on the left"));
+        let names = ["Firefox", "Text Editor", "Files", "Terminal"];
+        assert_eq!(named_in("Firefox", &names).as_deref(), Some("Firefox"));
+        assert_eq!(named_in("Terminal to friendly", &names).as_deref(), Some("Terminal"), "a misheard command still names it");
+        assert_eq!(named_in("the text editor", &names).as_deref(), Some("Text Editor"));
+        assert_eq!(named_in("tell me a joke", &names), None);
+        assert_eq!(one("Bring terminal to front"), ("focus_window".into(), json!({"window": "terminal"})));
+        assert_eq!(one("bring the terminal to the front"), ("focus_window".into(), json!({"window": "terminal"})));
     }
 
     #[test]

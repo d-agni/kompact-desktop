@@ -308,6 +308,18 @@ pub fn tidy_talk(out: &str) -> Option<String> {
     kept.chars().any(char::is_alphanumeric).then_some(kept)
 }
 
+/// 20a: a chat reply that says (or orders) something was done ("Firefox is open and
+/// maximized.", "Open Terminal."): talk can't act, so it mustn't sound as if it did.
+pub fn claims_action(reply: &str) -> bool {
+    let r = super::rules::normalize(reply);
+    const DONE: [&str; 22] = [
+        "is open", "is now open", "opened", "i opened", "ive opened", "i have opened", "closed", "maximized", "minimized", "launched", "started",
+        "turned on", "turned off", "switched", "is now on", "is now off", "i will open", "ill open", "im opening", "ive done", "done that", "frontmost",
+    ];
+    const ORDERS: [&str; 10] = ["open ", "close ", "maximize ", "minimize ", "launch ", "start ", "bring ", "turn ", "switch ", "make "];
+    DONE.iter().any(|d| r.contains(d)) || ORDERS.iter().any(|o| r.starts_with(o))
+}
+
 /// A short name for the prompt cache, changing whenever the instructions or the model do.
 pub fn cache_key(prefix: &str, model_size: u64) -> String {
     // FNV-1a: no crate for a file name.
@@ -403,7 +415,12 @@ pub fn ask(text: &str) -> Result<Vec<Step>, String> {
 pub fn talk(text: &str, history: &[(String, String)], now: &str) -> Result<String, String> {
     let (answer, fresh, ms) = run_model("talk", &chat_prefix(), &chat_prompt(text, history, now), &["--temp", "0.6", "-n", "48"])?;
     info!("model: talk {text:?} → {:?} in {ms} ms{}", answer.trim(), if fresh { " (prompt cache made)" } else { "" });
-    tidy_talk(&answer).ok_or_else(|| "the model had nothing to say".into())
+    let said = tidy_talk(&answer).ok_or_else(|| "the model had nothing to say".to_string())?;
+    if claims_action(&said) {
+        info!("model: talk claimed an action ({said:?}); said honestly instead");
+        return Ok("I haven't done anything there. Tell me what to do, like “open Firefox” or “maximize the terminal”.".into());
+    }
+    Ok(said)
 }
 
 /// Make the prompt cache in the background (the first run takes ~12 s here), half a minute
@@ -527,6 +544,17 @@ mod tests {
         assert!(grounded(&st("now_playing", json!({})), "what song is this"));
         assert!(!grounded(&st("power", json!({"action": "restart"})), "the cat sat on all"));
         assert!(!grounded(&st("place_window", json!({"window": "all files", "where": "left"})), "Me and all the devices"));
+    }
+
+    #[test]
+    fn talk_never_claims_an_action() {
+        // The replies from the 2026-10-25 log.
+        assert!(claims_action("Sure, Firefox is open and maximized."));
+        assert!(claims_action("Open Terminal."));
+        assert!(claims_action("Open Terminal and make it the frontmost application."));
+        assert!(!claims_action("Why was the math book sad? Because it had too many problems."));
+        assert!(!claims_action("I'm sorry, but I don't have real-time information about climate reports."));
+        assert!(!claims_action("I'm here, ready to assist with tasks!"));
     }
 
     #[test]
