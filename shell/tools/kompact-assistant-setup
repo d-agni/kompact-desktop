@@ -10,9 +10,9 @@
 #
 # Ubuntu's packages (whisper.cpp, llama.cpp-tools) are installed with sudo apt when missing
 # (Ubuntu 26.04 has them; 24.04 doesn't, and those parts are skipped there). The models go into
-# ~/.local/share/kompact/, each checked against a published or pinned SHA-256. Siva himself never
-# goes online: this is the one time they're fetched. Typed requests and the built-in rules work
-# without any of it.
+# ~/.local/share/kompact/, each checked against a published or pinned SHA-256; this is the one
+# time they're fetched. After that Siva goes online only for what you ask to look up, as Settings
+# → Assistant → Internet allows (20d). Typed requests and the built-in rules work without any of it.
 set -euo pipefail
 
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -48,7 +48,8 @@ packaged() { apt-cache show "$1" >/dev/null 2>&1; }
 check() {
     local ok=1
     if have whisper-cli && compgen -G "$data/whisper/ggml-*.bin" >/dev/null; then
-        echo "hearing:       ready ($(basename "$(ls "$data"/whisper/ggml-*.bin | head -1)"))"
+        # Siva uses the best one there (small.en before base.en).
+        echo "hearing:       ready ($(cd "$data/whisper" && ls ggml-*.bin | sed 's/^ggml-//; s/\.bin$//' | paste -sd ' '))"
     else
         echo "hearing:       not set up"; ok=
     fi
