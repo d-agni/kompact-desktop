@@ -185,6 +185,33 @@ pub fn sound_text(dump: &Value, cpu: Option<f64>) -> String {
     format!("{label} plays in music quality{codec}. If it cuts out, it's usually Bluetooth range: walls, or 2.4 GHz Wi-Fi nearby.{busy}")
 }
 
+// ---- the clock (pure) ----
+
+const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// "It's 2:05 PM on Saturday, 24 October." (`weekday` 0 = Sunday, `month` 0 = January, as
+/// `struct tm` has them; 24-hour when `h24`.)
+pub fn clock_text(hour: i32, min: i32, weekday: i32, day: i32, month: i32, h24: bool) -> String {
+    let time = if h24 {
+        format!("{hour:02}:{min:02}")
+    } else {
+        let h = if hour % 12 == 0 { 12 } else { hour % 12 };
+        format!("{h}:{min:02} {}", if hour < 12 { "AM" } else { "PM" })
+    };
+    let wd = DAYS.get(weekday as usize).copied().unwrap_or("");
+    let mo = MONTHS.get(month as usize).copied().unwrap_or("");
+    format!("It's {time} on {wd}, {day} {mo}.")
+}
+
+/// The clock now, as `clock_text` says it (12-hour unless the menu bar's clock is 24-hour).
+pub fn now_text(h24: bool) -> String {
+    let t = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    clock_text(tm.tm_hour, tm.tm_min, tm.tm_wday, tm.tm_mday, tm.tm_mon, h24)
+}
+
 // ---- the real thing ----
 
 fn read_procs() -> HashMap<u32, (String, u64)> {
@@ -231,6 +258,14 @@ pub fn disks() -> Vec<Disk> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn telling_the_time() {
+        assert_eq!(clock_text(14, 5, 6, 24, 9, false), "It's 2:05 PM on Saturday, 24 October.");
+        assert_eq!(clock_text(0, 30, 0, 1, 0, false), "It's 12:30 AM on Sunday, 1 January.");
+        assert_eq!(clock_text(12, 0, 1, 2, 11, false), "It's 12:00 PM on Monday, 2 December.");
+        assert_eq!(clock_text(9, 7, 3, 9, 4, true), "It's 09:07 on Wednesday, 9 May.");
+    }
 
     #[test]
     fn reading_proc() {

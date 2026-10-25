@@ -19,6 +19,8 @@ pub enum Parsed {
     Steps(Vec<Step>),
     Hello,
     Help,
+    /// 19k: small talk, answered at once.
+    Talk(&'static str),
     /// Not understood: the part that wasn't.
     Unknown(String),
 }
@@ -102,6 +104,11 @@ fn placement(words: &[&str]) -> Option<(String, &'static str)> {
         return None;
     };
     let verbs = ["put", "move", "snap", "place", "send", "show"];
+    // 19k: "close the firefox on the left" is closing; "on the left" says which one.
+    const OTHER: [&str; 14] = ["close", "quit", "exit", "kill", "minimize", "minimise", "hide", "maximize", "maximise", "focus", "switch", "bring", "open", "restore"];
+    if words.first().is_some_and(|w| OTHER.contains(w)) {
+        return None;
+    }
     let skip = usize::from(words.first().is_some_and(|w| verbs.contains(w)));
     let name: Vec<&str> = words[skip..]
         .iter()
@@ -125,6 +132,10 @@ fn clause(c: &str) -> Option<Vec<Step>> {
     }
 
     // ---- reading ----
+    // 19k: the time and the date (from this PC's clock).
+    if (has(&w, &["time"]) && has(&w, &["what", "whats", "tell"])) || c == "time" || c == "time please" || (has(&w, &["date", "day"]) && has(&w, &["what", "whats", "todays", "today"])) {
+        return Some(vec![step("date_time", json!({}))]);
+    }
     // 19g: why things are as they are.
     if has(&w, &["slow", "laggy", "lagging", "lag", "sluggish", "cpu", "processor", "ram", "memory"]) || c.contains("system status") || c.contains("how is my computer") || c.contains("hogging") {
         return Some(vec![step("system_status", json!({}))]);
@@ -143,6 +154,11 @@ fn clause(c: &str) -> Option<Vec<Step>> {
     }
     if (has(&w, &["what", "whats", "how"]) && has(&w, &["volume", "loud"])) || c == "sound status" {
         return Some(vec![step("sound_status", json!({}))]);
+    }
+    // 19l: "how many firefox windows are open?"
+    if c.starts_with("how many ") && (has(&w, &["windows", "window", "open", "running"])) {
+        let name: Vec<&str> = w[2..].iter().copied().filter(|x| !["windows", "window", "are", "is", "open", "opened", "running", "there", "do", "i", "have", "of", "the", "alone"].contains(x)).collect();
+        return Some(vec![if name.is_empty() { step("list_windows", json!({})) } else { step("list_windows", json!({"app": name.join(" ")})) }]);
     }
     if has(&w, &["windows"]) && has(&w, &["what", "whats", "which", "list", "open", "show"]) {
         return Some(vec![step("list_windows", json!({}))]);
@@ -254,16 +270,34 @@ fn clause(c: &str) -> Option<Vec<Step>> {
     if let Some((name, to)) = placement(&w) {
         return Some(vec![step("place_window", json!({"window": name, "where": to}))]);
     }
+    // 19l: a bare "maximize" ("open firefox and maximize", "maximize the window") means the app
+    // just named: "it".
+    let named = || name_after(&w, 1).unwrap_or_else(|| "it".into());
     match first {
-        "maximize" | "maximise" | "fill" | "enlarge" => return name_after(&w, 1).map(|n| vec![step("place_window", json!({"window": n, "where": "fill"}))]),
-        "restore" | "unmaximize" | "unmaximise" => return name_after(&w, 1).map(|n| vec![step("place_window", json!({"window": n, "where": "restore"}))]),
-        "minimize" | "minimise" | "hide" => return name_after(&w, 1).map(|n| vec![step("minimize_window", json!({"window": n}))]),
-        "close" | "quit" | "exit" => return name_after(&w, 1).map(|n| vec![step("close_window", json!({"window": n}))]),
+        "maximize" | "maximise" | "fill" | "enlarge" => return Some(vec![step("place_window", json!({"window": named(), "where": "fill"}))]),
+        "restore" | "unmaximize" | "unmaximise" => return Some(vec![step("place_window", json!({"window": named(), "where": "restore"}))]),
+        "minimize" | "minimise" | "hide" => return Some(vec![step("minimize_window", json!({"window": named()}))]),
+        "close" | "quit" | "exit" => return Some(vec![step("close_window", json!({"window": named()}))]),
+        // "focus" alone is the focus routine, not a window.
         "focus" => return name_after(&w, 1).map(|n| vec![step("focus_window", json!({"window": n}))]),
         _ => {}
     }
+    // 19l: "switch window", "swap windows", "the other window", "previous window": Alt+Tab's one.
+    if ["switch window", "switch windows", "swap window", "swap windows", "other window", "the other window", "next window", "previous window", "go back", "switch back"].contains(&c) {
+        return Some(vec![step("focus_window", json!({"window": "other one"}))]);
+    }
+    // 19l: "bring terminal up".
+    if let Some(name) = c.strip_prefix("bring ").and_then(|r| r.strip_suffix(" up")) {
+        let n = name_after(&name.split_whitespace().collect::<Vec<_>>(), 0)?;
+        return Some(vec![step("focus_window", json!({"window": n}))]);
+    }
     if c.starts_with("switch to ") || c.starts_with("go to ") || c.starts_with("bring up ") || c.starts_with("show me ") {
         return name_after(&w, 2).map(|n| vec![step("focus_window", json!({"window": n}))]);
+    }
+    // 19j: "bring firefox back".
+    if let Some(name) = c.strip_prefix("bring ").and_then(|r| r.strip_suffix(" back")) {
+        let n = name_after(&name.split_whitespace().collect::<Vec<_>>(), 0)?;
+        return Some(vec![step("focus_window", json!({"window": n}))]);
     }
     if c.starts_with("make ") && (c.ends_with(" bigger") || c.ends_with(" full screen") || c.ends_with(" fullscreen")) {
         let name = c.trim_start_matches("make ").trim_end_matches(" bigger").trim_end_matches(" full screen").trim_end_matches(" fullscreen");
@@ -297,6 +331,26 @@ fn split(c: &str) -> Vec<String> {
     out
 }
 
+/// 19k: what a person says in passing, and Siva's answer (anything longer goes to the model).
+fn small_talk(c: &str) -> Option<&'static str> {
+    let is = |list: &[&str]| list.contains(&c);
+    Some(if is(&["how are you", "how are you doing", "how are you today", "hows it going", "how do you do", "you ok", "are you ok"]) {
+        "I'm good, thanks for asking! What can I do for you?"
+    } else if is(&["thank you", "thanks", "thank you so much", "thanks a lot", "cheers", "thanks siva", "thank you siva", "nice", "great", "awesome", "perfect", "cool", "good job", "well done"]) {
+        "Happy to help."
+    } else if is(&["who are you", "whats your name", "what is your name", "what are you", "who made you"]) {
+        "I'm Siva, the assistant built into your desktop. I run right here on this PC, and nothing you say leaves it."
+    } else if is(&["good night", "goodnight", "night"]) {
+        "Good night! Sleep well."
+    } else if is(&["bye", "goodbye", "see you", "see you later", "thats all", "that is all", "nothing", "never mind"]) {
+        "Okay. Call me any time."
+    } else if is(&["are you there", "you there", "are you listening", "can you hear me"]) {
+        "I'm here, and I can hear you."
+    } else {
+        return None;
+    })
+}
+
 /// 19e: a step as one line of a plan ("Open Firefox", "Put Terminal on the left").
 pub fn describe(s: &Step) -> String {
     let text = |k: &str| s.args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
@@ -314,6 +368,7 @@ pub fn describe(s: &Step) -> String {
         "bluetooth_status" => "Check Bluetooth".into(),
         "now_playing" => "See what's playing".into(),
         "system_status" => "Check how busy the computer is".into(),
+        "date_time" => "Check the time".into(),
         "disk_space" => "Check the disk space".into(),
         "sound_check" => "Check the sound quality".into(),
         "set_volume" => format!("Volume {}%", int("percent")),
@@ -426,8 +481,11 @@ fn corrected(text: &str) -> String {
 }
 
 pub fn parse(text: &str) -> Parsed {
+    // 19k: ", which is on the left" describes what came before it: not a request of its own.
+    let lower = text.to_lowercase();
+    let glued = [", which", ", that is", ", the one"].iter().fold(lower, |t, c| t.replace(c, &c[1..]));
     // Commas and semicolons separate requests too: mark them before punctuation goes.
-    let marked = text.replace([',', ';'], " and ");
+    let marked = glued.replace([',', ';'], " and ");
     let c = normalize(&marked);
     if c.is_empty() {
         return Parsed::Unknown(String::new());
@@ -438,6 +496,10 @@ pub fn parse(text: &str) -> Parsed {
     if c == "help" || c.contains("what can you do") || c == "what do you do" {
         return Parsed::Help;
     }
+    let said = normalize(text);
+    if let Some(answer) = small_talk(said.strip_suffix(" siva").unwrap_or(&said)) {
+        return Parsed::Talk(answer);
+    }
     let mut steps = Vec::new();
     for part in split(&c) {
         match clause(&part) {
@@ -445,9 +507,43 @@ pub fn parse(text: &str) -> Parsed {
             None => return Parsed::Unknown(part),
         }
     }
-    // "open files then put it on the left": "it" is the app just opened.
+    resolve_it(&mut steps);
+    if steps.is_empty() {
+        Parsed::Unknown(c)
+    } else {
+        Parsed::Steps(steps)
+    }
+}
+
+/// 19l: each request in `text`, as steps or (the ones the rules don't know) its words; None if
+/// it's a greeting, help or small talk, or empty. For the local model to get only the part it
+/// must work out.
+pub fn clauses(text: &str) -> Option<Vec<Result<Vec<Step>, String>>> {
+    if !matches!(parse(text), Parsed::Unknown(_) | Parsed::Steps(_)) {
+        return None;
+    }
+    let lower = text.to_lowercase();
+    let glued = [", which", ", that is", ", the one"].iter().fold(lower, |t, c| t.replace(c, &c[1..]));
+    let c = normalize(&glued.replace([',', ';'], " and "));
+    let parts: Vec<Result<Vec<Step>, String>> = split(&c).into_iter().map(|p| clause(&p).ok_or(p)).collect();
+    (!parts.is_empty()).then_some(parts)
+}
+
+/// 19l: a remark, not a request ("there are 2 firefox open", "i like this song"): talked about,
+/// never acted on.
+pub fn is_remark(text: &str) -> bool {
+    let c = normalize(text);
+    const OPENINGS: [&str; 16] = [
+        "there are ", "there is ", "theres ", "i have ", "ive ", "it is ", "its ", "this is ", "that is ", "thats ", "i think ", "i like ",
+        "i love ", "i hate ", "i am ", "im ",
+    ];
+    OPENINGS.iter().any(|o| c.starts_with(o)) && !c.contains(" please")
+}
+
+/// "open files then put it on the left": "it" is the app just opened (the window just named).
+pub fn resolve_it(steps: &mut [Step]) {
     let mut last: Option<String> = None;
-    for s in &mut steps {
+    for s in steps.iter_mut() {
         if let Some(name) = s.args.get("app").and_then(Value::as_str) {
             last = Some(name.to_string());
         }
@@ -457,13 +553,10 @@ pub fn parse(text: &str) -> Parsed {
             }
         }
         if let Some(name) = s.args.get("window").and_then(Value::as_str) {
-            last = Some(name.to_string());
+            if name != "it" {
+                last = Some(name.to_string());
+            }
         }
-    }
-    if steps.is_empty() {
-        Parsed::Unknown(c)
-    } else {
-        Parsed::Steps(steps)
     }
 }
 
@@ -611,6 +704,60 @@ mod tests {
             let line = describe(&step(t.name, json!({})));
             assert_ne!(line, t.name.replace('_', " "), "{}", t.name);
         }
+    }
+
+    #[test]
+    fn the_gaps_from_the_log() {
+        // 2026-10-24: all of these went to the model, and three came back wrong.
+        let tools = |t: &str| match parse(t) {
+            Parsed::Steps(s) => s.iter().map(|s| (s.tool, s.args.clone())).collect::<Vec<_>>(),
+            other => panic!("{t}: {other:?}"),
+        };
+        assert_eq!(tools("Open Firefox and maximize"), [("open_app", json!({"app": "firefox"})), ("place_window", json!({"window": "firefox", "where": "fill"}))]);
+        assert_eq!(tools("Open Firefox and then maximize the window"), [("open_app", json!({"app": "firefox"})), ("place_window", json!({"window": "firefox", "where": "fill"}))]);
+        assert_eq!(tools("Bring terminal up"), [("focus_window", json!({"window": "terminal"}))]);
+        assert_eq!(tools("How many Firefox windows are open?"), [("list_windows", json!({"app": "firefox"}))]);
+        assert_eq!(tools("how many windows are open"), [("list_windows", json!({}))]);
+        assert_eq!(tools("Switch window"), [("focus_window", json!({"window": "other one"}))]);
+        assert_eq!(tools("Close last Firefox"), [("close_window", json!({"window": "last firefox"}))]);
+        assert!(is_remark("There are 2 Firefox open"));
+        assert!(is_remark("I like this song"));
+        assert!(!is_remark("open firefox"));
+        // Only the part the rules don't know goes to the model.
+        let parts = clauses("open firefox and make it sparkle").unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].is_ok());
+        assert_eq!(parts[1].as_ref().unwrap_err(), "make it sparkle");
+        assert!(clauses("hello").is_none());
+    }
+
+    #[test]
+    fn talking() {
+        assert!(matches!(parse("How are you?"), Parsed::Talk(t) if t.starts_with("I'm good")));
+        assert!(matches!(parse("Thanks, Siva"), Parsed::Talk(_)));
+        assert!(matches!(parse("what's your name"), Parsed::Talk(t) if t.contains("Siva")));
+        assert_eq!(one("what time is it"), ("date_time".into(), json!({})));
+        assert_eq!(one("what's the date today"), ("date_time".into(), json!({})));
+        assert_eq!(one("what day is it"), ("date_time".into(), json!({})));
+        assert!(matches!(parse("tell me about the moon"), Parsed::Unknown(_)), "the model's to answer");
+    }
+
+    #[test]
+    fn describing_windows() {
+        // The user's own requests, 2026-10-24.
+        assert_eq!(one("Close the Firefox, which is put on the left side"), ("close_window".into(), json!({"window": "firefox which is put on the left side"})));
+        assert_eq!(one("Close Firefox, which is in the left side"), ("close_window".into(), json!({"window": "firefox which is in the left side"})));
+        assert_eq!(one("close the firefox which is in back"), ("close_window".into(), json!({"window": "firefox which is in back"})));
+        assert_eq!(one("close all the firefox windows"), ("close_window".into(), json!({"window": "all the firefox windows"})));
+        assert_eq!(one("minimize the other one"), ("minimize_window".into(), json!({"window": "other one"})));
+        // Still two requests.
+        assert!(matches!(parse("open files, dark mode"), Parsed::Steps(s) if s.len() == 2));
+    }
+
+    #[test]
+    fn bringing_back() {
+        assert_eq!(one("bring firefox back"), ("focus_window".into(), json!({"window": "firefox"})));
+        assert_eq!(one("bring the terminal back"), ("focus_window".into(), json!({"window": "terminal"})));
     }
 
     #[test]

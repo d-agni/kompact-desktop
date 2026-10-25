@@ -420,6 +420,29 @@
         <div class="row"><span class="row-label">Click the ring and speak; it knows when you've finished<span class="hint" id="as-voice">…</span></span></div>
         <div class="row"><span class="row-label" id="as-speak-label">Speak replies<span class="hint" id="as-speech">…</span></span><select id="as-speak" class="select" aria-labelledby="as-speak-label"><option value="voice">When I speak</option><option value="always">Always</option><option value="never">Never</option></select></div>
       </section>
+      <!-- 19j -->
+      <h2 class="group-title">Learn my voice</h2>
+      <p class="sub as-rt-sub">Siva can't retrain its hearing here, but it learns how it mishears you (“open permanent” for “open terminal”) and puts that right every time, before anything reads it.</p>
+      <section class="card">
+        <div class="row"><span class="row-label">Training<span class="hint" id="lv-train-hint">Read 22 short phrases aloud; for each, Siva keeps what it heard. A few minutes, and again any time.</span></span><button id="lv-start" class="btn" type="button">Start Training</button></div>
+        <div id="lv-train" class="lv-train" hidden>
+          <div class="lv-say"><span class="muted" id="lv-count"></span> Say: <strong id="lv-phrase"></strong></div>
+          <div id="lv-heard" class="lv-heard" role="status" aria-live="polite"></div>
+          <div class="lv-buttons">
+            <button id="lv-listen" class="btn primary" type="button">Listen</button>
+            <button id="lv-skip" class="btn" type="button">Skip</button>
+            <button id="lv-stop" class="btn" type="button">Stop</button>
+          </div>
+        </div>
+        <div class="row"><span class="row-label">In everyday use<span class="hint">When it mishears you, click ✎ beside what it heard and type what you said: it does that, and remembers.</span></span></div>
+      </section>
+      <section class="card">
+        <div class="row"><span class="row-label">Your words<span class="hint">Names you use, one a line (apps, routines, places): it spells them your way.</span></span><button id="lv-words-save" class="btn" type="button">Save</button></div>
+        <textarea id="lv-words" class="lv-words" spellcheck="false" aria-label="Your words, one a line" placeholder="Ptyxis&#10;VS Code"></textarea>
+      </section>
+      <section class="card" id="lv-list"></section>
+      <div class="as-rt-actions"><button id="lv-clear" class="btn" type="button">Forget All…</button></div>
+      <p id="lv-status" class="status" role="status" aria-live="polite"></p>
       <h2 class="group-title">Understanding</h2>
       <section class="card">
         <div class="row"><span class="row-label">Built-in rules, at once<span class="hint">“volume 30”, “dark mode”, “open firefox”, “put firefox and files side by side”, routines.</span></span></div>

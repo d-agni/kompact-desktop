@@ -63,12 +63,13 @@ const ON: Arg = Arg::Bool;
 
 pub const TOOLS: &[Tool] = &[
     // ---- Tier 0: read ----
-    Tool { name: "list_windows", about: "The open windows: app, title, desktop, minimized, focused.", tier: Tier::Read, undo: false, params: &[] },
+    Tool { name: "list_windows", about: "The open windows: app, title, desktop, minimized, focused.", tier: Tier::Read, undo: false, params: &[opt("app", WINDOW, "only this app's windows")] },
     Tool { name: "sound_status", about: "Output and input devices, the volume, muted or not.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "network_status", about: "Wi-Fi and wired connections.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "bluetooth_status", about: "Bluetooth on or off, and the devices.", tier: Tier::Read, undo: false, params: &[] },
     // 19g: why things are as they are.
     Tool { name: "system_status", about: "How busy the computer is: CPU, memory and the busiest apps (why it's slow).", tier: Tier::Read, undo: false, params: &[] },
+    Tool { name: "date_time", about: "The time and the date now.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "disk_space", about: "How much space is left on the disks.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "sound_check", about: "Why the sound may be bad or cutting out: muted, the output, a Bluetooth headset in phone-quality mode.", tier: Tier::Read, undo: false, params: &[] },
     Tool { name: "now_playing", about: "What the media players are playing.", tier: Tier::Read, undo: false, params: &[] },

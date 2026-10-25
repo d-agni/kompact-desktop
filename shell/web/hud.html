@@ -26,7 +26,13 @@
         <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg>
       </button>
     </div>
-    <div id="heard" class="heard"></div>
+    <div class="heard-row">
+      <div id="heard" class="heard"></div>
+      <!-- 19j: not what you said? Fix it, and Siva remembers. -->
+      <button id="fix" class="icon fix" type="button" aria-label="Not what I said: fix it" title="Not what I said: fix it, and I'll remember">
+        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10.5 2.5l3 3-8 8H2.5v-3z M9 4l3 3"/></svg>
+      </button>
+    </div>
     <!-- 19e: a request of several steps, live -->
     <ol id="plan" class="plan" aria-label="Plan"></ol>
     <div id="reply" class="reply" aria-live="polite"></div>

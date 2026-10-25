@@ -9,7 +9,7 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::info;
 
@@ -42,7 +42,7 @@ pub struct AppCand {
 }
 
 /// How well `query` names something with this name, id, keywords and title: 0 is not at all.
-fn score(query: &str, name: &str, id: &str, about: &str, title: &str) -> u32 {
+pub fn score(query: &str, name: &str, id: &str, about: &str, title: &str) -> u32 {
     let q = query.trim().to_lowercase();
     let (name, id, about, title) = (name.to_lowercase(), id.to_lowercase(), about.to_lowercase(), title.to_lowercase());
     if q.is_empty() {
@@ -239,6 +239,10 @@ struct Inner {
     waiting: Option<Waiting>,
     /// The last few requests' undo lists, newest last.
     undos: Vec<(u64, Vec<Undo>)>,
+    /// 19k: the window or app named last, for "it", "that" and "the other one" later on.
+    last_window: Option<String>,
+    /// 19k: the last few exchanges (what you said, what Siva said), for talking.
+    pub history: std::collections::VecDeque<(String, String)>,
 }
 
 const KEEP_UNDOS: usize = 10;
@@ -295,8 +299,59 @@ struct Ctx {
 /// How long a step waits for the window of an app this request opened.
 const NEW_WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
 
-/// The window `query` names; after an `open_app`, its new window, waited for.
+/// 19k: where the windows are now: asks kompact (`layout`) and waits for the answer (~0.4 s at
+/// most). Each window's place, its place in the stack, and the monitor.
+async fn layout(app: &AppHandle, list: &[WinCand]) -> (Vec<(Option<(i32, i32, i32, i32)>, usize)>, (i32, i32, i32, i32)) {
+    let asked = std::time::Instant::now();
+    let comp = app.state::<Compositor>();
+    let _ = comp.send("layout", None);
+    let mut msg = None;
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        msg = comp.layout_since(asked);
+        if msg.is_some() {
+            break;
+        }
+    }
+    let msg = msg.unwrap_or(Value::Null);
+    let num = |v: &Value, k: &str| v.get(k).and_then(Value::as_i64).unwrap_or(0) as i32;
+    let o = &msg["output"];
+    let screen = (num(o, "x"), num(o, "y"), num(o, "w").max(1), num(o, "h").max(1));
+    let rects: Vec<Value> = msg["windows"].as_array().cloned().unwrap_or_default();
+    let places = list
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (rects.iter().find(|r| r["id"].as_u64() == Some(w.id)).map(|r| (num(r, "x"), num(r, "y"), num(r, "w"), num(r, "h"))), i))
+        .collect();
+    (places, screen)
+}
+
+/// 19k: the windows `query` means: "firefox" as before (one); "the firefox on the left", "the
+/// other one", "all firefox windows" by where the windows are (`refer`).
+async fn find_windows(app: &AppHandle, query: &str, ctx: &Ctx) -> Result<Vec<WinCand>, String> {
+    let r = super::refer::parse(query);
+    if !r.qualified() {
+        return find_window_named(app, query, ctx).await.map(|w| vec![w]);
+    }
+    let list = windows(app);
+    let (places, screen) = layout(app, &list).await;
+    let placed: Vec<super::refer::Placed> = list.iter().zip(&places).map(|(w, (rect, stack))| super::refer::Placed { win: w, rect: *rect, stack: *stack }).collect();
+    let last = app.state::<Assistant>().with(|i| i.last_window.clone());
+    let found: Vec<WinCand> = super::refer::pick(&r, &placed, screen, last.as_deref()).into_iter().cloned().collect();
+    info!("assistant: {query:?} → {:?} ({} windows)", r, found.len());
+    if found.is_empty() {
+        return Err(format!("I can't find {}.", if r.name.is_empty() { "that window".to_string() } else { format!("a {} window like that", r.name) }));
+    }
+    Ok(found)
+}
+
+/// One window (the first, if the words mean several).
 async fn find_window(app: &AppHandle, query: &str, ctx: &Ctx) -> Result<WinCand, String> {
+    find_windows(app, query, ctx).await?.into_iter().next().ok_or_else(|| format!("I can't find a window for “{query}”."))
+}
+
+/// The window `query` names; after an `open_app`, its new window, waited for.
+async fn find_window_named(app: &AppHandle, query: &str, ctx: &Ctx) -> Result<WinCand, String> {
     if let Some(before) = &ctx.before_open {
         let start = std::time::Instant::now();
         while start.elapsed() < NEW_WINDOW_WAIT {
@@ -339,11 +394,11 @@ fn notify_prefs(app: &AppHandle) -> crate::notify::NotifyPrefs {
 
 struct Done {
     text: String,
-    undo: Option<Undo>,
+    undo: Vec<Undo>,
 }
 
 fn done(text: impl Into<String>, undo: Option<Undo>) -> Result<Done, String> {
-    Ok(Done { text: text.into(), undo })
+    Ok(Done { text: text.into(), undo: undo.into_iter().collect() })
 }
 
 async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, String> {
@@ -353,7 +408,20 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
     let int_arg = |k: &str| a.get(k).and_then(Value::as_i64).unwrap_or(0);
     match s.tool {
         "list_windows" => {
-            let list = windows(app);
+            let mut list = windows(app);
+            // 19l: "how many firefox windows are open?"
+            if let Some(name) = s.args.get("app").and_then(Value::as_str) {
+                list.retain(|w| score(name, &w.name, &w.app_id, &w.about, &w.title) > 0);
+                let app_name = list.first().map(|w| w.name.clone()).unwrap_or_else(|| name.to_string());
+                return done(
+                    match list.len() {
+                        0 => format!("No {app_name} windows are open."),
+                        1 => format!("One {app_name} window is open."),
+                        n => format!("{n} {app_name} windows are open."),
+                    },
+                    None,
+                );
+            }
             if list.is_empty() {
                 return done("No windows are open.", None);
             }
@@ -392,6 +460,7 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             done(super::diagnose::load_text(&load), None)
         }
         "disk_space" => done(super::diagnose::disks_text(&super::diagnose::disks()), None),
+        "date_time" => done(super::diagnose::now_text(crate::datetime::load_prefs().hour24), None),
         "sound_check" => {
             let (dump, load) = tauri::async_runtime::spawn_blocking(|| (crate::sound::dump_now(), super::diagnose::sample()))
                 .await
@@ -477,9 +546,12 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             done(format!("Here's {}.", w.name), undo)
         }
         "minimize_window" => {
-            let w = find_window(app, &str_arg("window"), ctx).await?;
-            send(app, "minimize", Some(w.id))?;
-            done(format!("Minimized {}.", w.name), Some(Undo::Activate(w.id)))
+            let ws = find_windows(app, &str_arg("window"), ctx).await?;
+            for w in &ws {
+                send(app, "minimize", Some(w.id))?;
+            }
+            let what = if ws.len() == 1 { ws[0].name.clone() } else { format!("{} windows", ws.len()) };
+            Ok(Done { text: format!("Minimized {what}."), undo: ws.iter().map(|w| Undo::Activate(w.id)).collect() })
         }
         "place_window" => {
             let w = find_window(app, &str_arg("window"), ctx).await?;
@@ -542,9 +614,12 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             done("Locking.", None)
         }
         "close_window" => {
-            let w = find_window(app, &str_arg("window"), ctx).await?;
-            send(app, "close", Some(w.id))?;
-            done(format!("Closing {}.", w.name), None)
+            let ws = find_windows(app, &str_arg("window"), ctx).await?;
+            for w in &ws {
+                send(app, "close", Some(w.id))?;
+            }
+            let what = if ws.len() == 1 { ws[0].name.clone() } else { format!("{} windows", ws.len()) };
+            done(format!("Closing {what}."), None)
         }
         "wifi" => {
             let was = crate::network::network_state().await.ok().and_then(|n| n["wifi_enabled"].as_bool());
@@ -658,7 +733,13 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
                 return Reply { mood: "sorry", ..finish(app, said, undo, true) };
             }
             Decision::Confirm { .. } if !confirmed => {
-                let window = s.args.get("window").and_then(Value::as_str).and_then(|q| window_for(app, q).ok()).map(|w| label(&w));
+                let window = match s.args.get("window").and_then(Value::as_str) {
+                    Some(q) => find_windows(app, q, &ctx).await.ok().map(|ws| match ws.as_slice() {
+                        [one] => label(one),
+                        many => format!("{} windows: {}", many.len(), many.iter().map(label).collect::<Vec<_>>().join(", ")),
+                    }),
+                    None => None,
+                };
                 if s.tool == "close_window" && window.is_none() {
                     plan.set(i, "failed");
                     plan.rest(i + 1, "stopped");
@@ -682,6 +763,13 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
                 match run_step(app, s, &mut ctx).await {
                     Ok(d) => {
                         info!("assistant: ran {} {}", s.tool, s.args);
+                        // 19k: what "it" means next time.
+                        if let Some(n) = s.args.get("window").or(s.args.get("app")).and_then(Value::as_str) {
+                            let r = super::refer::parse(n);
+                            if !r.name.is_empty() && !["it", "that", "this"].contains(&r.name.as_str()) {
+                                app.state::<Assistant>().with(|i| i.last_window = Some(r.name.clone()));
+                            }
+                        }
                         activity::record(app, Kind::Ran, s.tool, &d.text);
                         plan.set(i, "done");
                         said.push(d.text);
@@ -704,13 +792,17 @@ async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<Str
 
 /// A typed request (the HUD's Type).
 #[tauri::command]
-pub async fn assistant_ask(app: AppHandle, text: String) -> Reply {
+/// `heard` (19j): what Siva had heard, when you typed this to put it right (the HUD's ✎): the
+/// pair is learnt.
+pub async fn assistant_ask(app: AppHandle, text: String, heard: Option<String>) -> Reply {
     let text: String = text.chars().take(300).collect();
     info!("assistant: asked {text:?}");
     if !text.trim().is_empty() {
         activity::record(&app, Kind::Asked, "", text.trim());
     }
+    let learnt = heard.as_deref().is_some_and(|h| super::learn::remember(h, &text));
     let r = request(&app, &text).await;
+    let r = if learnt { Reply { text: format!("Got it, I'll remember that. {}", r.text), ..r } } else { r };
     aloud(&app, r, false)
 }
 
@@ -723,7 +815,58 @@ fn aloud(app: &AppHandle, r: Reply, spoken: bool) -> Reply {
     r
 }
 
+/// 19k: how many exchanges Siva remembers for talking.
+const HISTORY: usize = 4;
+
+/// A request, typed or said; what was said and answered is kept for talking (19k).
 async fn request(app: &AppHandle, text: &str) -> Reply {
+    let r = request_inner(app, text).await;
+    if !r.text.is_empty() {
+        app.state::<Assistant>().with(|i| {
+            i.history.push_back((text.chars().take(200).collect(), r.text.chars().take(200).collect()));
+            while i.history.len() > HISTORY {
+                i.history.pop_front();
+            }
+        });
+    }
+    r
+}
+
+/// 19k: talk, through the local model when it's there.
+async fn talk(app: &AppHandle, text: &str) -> Reply {
+    if !super::model::state().ready {
+        return reply("I'm better at doing than chatting without my local model; set it up with “kompact-assistant-setup understanding”. Ask me “help” for what I can do.", "speaking");
+    }
+    let history: Vec<(String, String)> = app.state::<Assistant>().with(|i| i.history.iter().cloned().collect());
+    let now = super::diagnose::now_text(crate::datetime::load_prefs().hour24);
+    let words = text.to_string();
+    match tauri::async_runtime::spawn_blocking(move || super::model::talk(&words, &history, &now)).await.unwrap_or_else(|e| Err(e.to_string())) {
+        Ok(said) => {
+            activity::record(app, Kind::Understood, "", &format!("Talk: {said}"));
+            reply(said, "speaking")
+        }
+        Err(e) => {
+            info!("assistant: couldn't talk: {e}");
+            reply("Sorry, I lost my words there. Ask me again?", "sorry")
+        }
+    }
+}
+
+/// 19k: "it", "that", "this one" from an earlier request: the window or app named last.
+fn fill_in_it(steps: &mut [Step], last: Option<&str>) {
+    let Some(last) = last else { return };
+    for s in steps {
+        for k in ["window", "app"] {
+            if let Some(v) = s.args.get(k).and_then(Value::as_str) {
+                if ["it", "that", "this", "that one", "this one", "it back", "them"].contains(&v) {
+                    s.args[k] = json!(last);
+                }
+            }
+        }
+    }
+}
+
+async fn request_inner(app: &AppHandle, text: &str) -> Reply {
     // A new request drops one that was waiting on a card, and a Stop meant for an old one.
     app.state::<Assistant>().with(|i| i.waiting = None);
     STOP_PLAN.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -743,44 +886,77 @@ async fn request(app: &AppHandle, text: &str) -> Reply {
     match rules::parse(text) {
         Parsed::Hello => reply("Vanakkam! What can I do for you?", "happy"),
         Parsed::Help => reply(HELP, "speaking"),
-        Parsed::Unknown(part) if part.is_empty() => reply("Type what you'd like me to do.", "idle"),
-        // 19f: what the rules don't know, the local model may (its steps go through `policy`
-        // like any others).
-        Parsed::Unknown(part) if super::model::state().ready => {
-            let words = text.to_string();
-            match tauri::async_runtime::spawn_blocking(move || super::model::ask(&words)).await.unwrap_or_else(|e| Err(e.to_string())) {
-                Ok(steps) if !steps.is_empty() => {
-                    let lines: Vec<String> = steps.iter().map(rules::describe).collect();
-                    activity::record(app, Kind::Understood, "", &lines.join("; "));
-                    // One step about what you said runs (with Undo); several steps, or one that
-                    // isn't about your words (misheard words make those), only on your click.
-                    if steps.len() == 1 && super::model::grounded(&steps[0], text) {
-                        return proceed(app, steps, 0, Vec::new(), Vec::new(), false).await;
+        Parsed::Talk(answer) => reply(answer, "speaking"),
+        // 19k: not about the desktop at all ("tell me a joke"), or a remark ("there are two
+        // firefox windows"): talk, never act.
+        Parsed::Unknown(_) if super::model::state().ready && (rules::is_remark(text) || !super::model::about_desktop(text)) => talk(app, text).await,
+        // 19f, 19l: the rules do what they know; only the parts they don't go to the local model,
+        // one short request at a time, and only its steps about your words are kept. Its steps go
+        // through `policy` like any others.
+        Parsed::Unknown(_) if super::model::state().ready => {
+            let parts = rules::clauses(text).unwrap_or_default();
+            let mut steps: Vec<Step> = Vec::new();
+            let mut guessed: Vec<String> = Vec::new();
+            let mut missed: Vec<String> = Vec::new();
+            for part in parts {
+                match part {
+                    Ok(known) => steps.extend(known),
+                    Err(clause) => {
+                        let words = clause.clone();
+                        match tauri::async_runtime::spawn_blocking(move || super::model::ask(&words)).await.unwrap_or_else(|e| Err(e.to_string())) {
+                            Ok(guess) => {
+                                let n = guess.len();
+                                let kept = super::model::keep_grounded(guess, &clause);
+                                if kept.len() < n {
+                                    info!("assistant: dropped {} of the model's {n} steps for {clause:?} (not about it)", n - kept.len());
+                                }
+                                if kept.is_empty() {
+                                    missed.push(clause);
+                                }
+                                guessed.extend(kept.iter().map(rules::describe));
+                                steps.extend(kept);
+                            }
+                            Err(e) => {
+                                info!("assistant: the model couldn't help with {clause:?}: {e}");
+                                missed.push(clause);
+                            }
+                        }
                     }
-                    let state = app.state::<Assistant>();
-                    let id = state.id();
-                    info!("assistant: the model's plan asks first ({id}): {}", lines.join("; "));
-                    let card = Card { id, text: format!("Did you mean: {}?", lines.join(", ")), button: "Do It".into() };
-                    let plan = lines.into_iter().map(|text| PlanItem { text, state: "todo" }).collect();
-                    state.with(|inner| inner.waiting = Some(Waiting { id, steps, at: 0, said: Vec::new(), undo: Vec::new(), card: card.clone(), whole_plan: true }));
-                    Reply { text: card.text.clone(), mood: "concerned", undo: None, confirm: Some(card), plan: Some(plan) }
-                }
-                Ok(_) => {
-                    activity::record(app, Kind::Refused, "", "Not something I can do here");
-                    reply("That's not something I can do on this desktop.", "sorry")
-                }
-                Err(e) => {
-                    info!("assistant: the model couldn't help: {e}");
-                    activity::record(app, Kind::Refused, "", &format!("Didn't understand “{part}”"));
-                    reply(format!("Sorry, I don't understand “{part}”. Ask me “help” for ideas."), "sorry")
                 }
             }
+            if steps.is_empty() {
+                // Nothing to do here after all: an answer in words (19k).
+                return talk(app, text).await;
+            }
+            rules::resolve_it(&mut steps);
+            let last = app.state::<Assistant>().with(|i| i.last_window.clone());
+            fill_in_it(&mut steps, last.as_deref());
+            if !guessed.is_empty() {
+                activity::record(app, Kind::Understood, "", &guessed.join("; "));
+            }
+            let said: Vec<String> = missed.iter().map(|m| format!("I didn't get “{m}”.")).collect();
+            // A guess of more than two steps asks first (misheard words make those).
+            if guessed.len() <= 2 {
+                return proceed(app, steps, 0, said, Vec::new(), false).await;
+            }
+            let lines: Vec<String> = steps.iter().map(rules::describe).collect();
+            let state = app.state::<Assistant>();
+            let id = state.id();
+            info!("assistant: the model's plan asks first ({id}): {}", lines.join("; "));
+            let card = Card { id, text: format!("Did you mean: {}?", lines.join(", ")), button: "Do It".into() };
+            let plan = lines.into_iter().map(|text| PlanItem { text, state: "todo" }).collect();
+            state.with(|inner| inner.waiting = Some(Waiting { id, steps, at: 0, said, undo: Vec::new(), card: card.clone(), whole_plan: true }));
+            Reply { text: card.text.clone(), mood: "concerned", undo: None, confirm: Some(card), plan: Some(plan) }
         }
         Parsed::Unknown(part) => {
             activity::record(app, Kind::Refused, "", &format!("Didn't understand “{part}”"));
             reply(format!("Sorry, I don't understand “{part}” yet. Ask me “help” for ideas."), "sorry")
         }
-        Parsed::Steps(steps) => proceed(app, steps, 0, Vec::new(), Vec::new(), false).await,
+        Parsed::Steps(mut steps) => {
+            let last = app.state::<Assistant>().with(|i| i.last_window.clone());
+            fill_in_it(&mut steps, last.as_deref());
+            proceed(app, steps, 0, Vec::new(), Vec::new(), false).await
+        }
     }
 }
 
@@ -792,24 +968,23 @@ pub fn tell(app: &AppHandle, state: &str, detail: &str) {
 
 /// 19h: listen until you've finished, then do what was said. The menu bar and the HUD follow
 /// along through `kompact-assistant` and the wave through `kompact-assistant-level`.
-#[tauri::command]
-pub async fn assistant_listen(app: AppHandle) -> Reply {
-    let ready = super::voice::state();
-    if let Some(missing) = ready.missing {
-        return reply(format!("My ears aren't set up yet. {missing}"), "sorry");
+/// 19j: listen once on the chosen microphone (the chime, the menu bar's wave), and the words.
+async fn hear(app: &AppHandle) -> Result<super::voice::Heard, String> {
+    if let Some(missing) = super::voice::state().missing {
+        return Err(format!("My ears aren't set up yet. {missing}"));
     }
     if super::voice::listening() {
-        return reply("", "idle");
+        return Ok(super::voice::Heard::Cancelled);
     }
     let mic = match tauri::async_runtime::spawn_blocking(crate::sound::microphone_now).await {
         Ok(Ok(Some(mic))) => mic,
-        Ok(Ok(None)) => return reply("There's no microphone. Connect your headset, or choose one in Settings → Sound.", "sorry"),
-        Ok(Err(e)) => return reply(format!("I can't find the microphone: {e}"), "sorry"),
-        Err(e) => return reply(format!("I can't find the microphone: {e}"), "sorry"),
+        Ok(Ok(None)) => return Err("There's no microphone. Connect your headset, or choose one in Settings → Sound.".into()),
+        Ok(Err(e)) => return Err(format!("I can't find the microphone: {e}")),
+        Err(e) => return Err(format!("I can't find the microphone: {e}")),
     };
     // Never talk over you (nor let the microphone hear Siva).
     super::speech::hush();
-    tell(&app, "listening", &mic.label);
+    tell(app, "listening", &mic.label);
     let a = app.clone();
     let heard = tauri::async_runtime::spawn_blocking(move || {
         let level = |l: f64| {
@@ -824,9 +999,22 @@ pub async fn assistant_listen(app: AppHandle) -> Reply {
     })
     .await
     .unwrap_or_else(|e| Err(e.to_string()));
-    let r = match heard {
+    if !matches!(heard, Ok(super::voice::Heard::Text(_))) {
+        tell(app, "idle", "");
+    }
+    heard
+}
+
+/// 19h: listen until you've finished, then do what was said. The menu bar and the HUD follow
+/// along through `kompact-assistant` and the wave through `kompact-assistant-level`.
+#[tauri::command]
+pub async fn assistant_listen(app: AppHandle) -> Reply {
+    let r = match hear(&app).await {
         Ok(super::voice::Heard::Text(text)) => {
-            tell(&app, "thinking", &text);
+            // 19j: shown as you meant it (what Siva learnt about your voice), with what was
+            // heard kept for the HUD's ✎, so a fix teaches the right pair.
+            let shown = super::learn::load().apply(&text).unwrap_or_else(|| text.clone());
+            let _ = app.emit("kompact-assistant", serde_json::json!({"state": "thinking", "detail": shown, "raw": text}));
             assistant_heard(app.clone(), text).await
         }
         Ok(super::voice::Heard::Nothing(why)) => reply(why, "sorry"),
@@ -837,6 +1025,20 @@ pub async fn assistant_listen(app: AppHandle) -> Reply {
     aloud(&app, r, true)
 }
 
+/// 19j: the training session: listen once and give the words, doing nothing with them.
+#[tauri::command]
+pub async fn voice_hear(app: AppHandle) -> super::voice::Listened {
+    match hear(&app).await {
+        Ok(super::voice::Heard::Text(t)) => {
+            tell(&app, "idle", "");
+            super::voice::Listened { text: Some(t), note: None }
+        }
+        Ok(super::voice::Heard::Nothing(why)) => super::voice::Listened { text: None, note: Some(why) },
+        Ok(super::voice::Heard::Cancelled) => super::voice::Listened { text: None, note: Some("Cancelled.".into()) },
+        Err(e) => super::voice::Listened { text: None, note: Some(e) },
+    }
+}
+
 /// 19d: what Siva heard. While a card waits, a spoken "no"
 /// or "cancel" answers it; a spoken "yes" can't (`policy::confirmed`), so the card stays for a
 /// click. Anything else is a new request, as if typed.
@@ -844,7 +1046,18 @@ pub async fn assistant_listen(app: AppHandle) -> Reply {
 pub async fn assistant_heard(app: AppHandle, text: String) -> Reply {
     let text: String = text.chars().take(300).collect();
     info!("assistant: heard {text:?}");
-    activity::record(&app, Kind::Heard, "", text.trim());
+    // 19j: put right as Siva learnt from you, before anything reads it.
+    let text = match super::learn::load().apply(&text) {
+        Some(fixed) => {
+            info!("voice: put right from what you taught: {text:?} → {fixed:?}");
+            activity::record(&app, Kind::Heard, "", &format!("{} (as {fixed})", text.trim()));
+            fixed
+        }
+        None => {
+            activity::record(&app, Kind::Heard, "", text.trim());
+            text
+        }
+    };
     let waiting = app.state::<Assistant>().with(|i| i.waiting.as_ref().map(|w| (w.id, w.card.clone())));
     let spoken = rules::spoken_answer(&text);
     match (spoken, waiting) {

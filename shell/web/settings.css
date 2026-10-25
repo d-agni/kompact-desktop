@@ -603,4 +603,13 @@ label.row { cursor: default; }
 .as-rt textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
 .as-rt .note { color: var(--error); font-size: 12px; margin: -4px 12px 10px; }
 .as-rt .note:empty { display: none; }
+/* 19j: learn my voice */
+.lv-train { padding: 4px 12px 12px; border-top: 1px solid var(--line); }
+.lv-say { font-size: 15px; margin: 8px 0 4px; }
+.lv-say strong { font-size: 18px; }
+.lv-heard { min-height: 20px; color: var(--muted); }
+.lv-heard.learnt { color: var(--accent); }
+.lv-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+.lv-words { display: block; box-sizing: border-box; width: calc(100% - 24px); margin: 0 12px 10px; min-height: 56px; resize: vertical; font: inherit; color: var(--fg); background: var(--key); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.lv-words:focus { outline: none; border-color: var(--accent); }
 .as-rt-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 0 0 4px; }

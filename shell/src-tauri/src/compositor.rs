@@ -37,6 +37,9 @@ pub struct Compositor {
     displays: Mutex<Option<Value>>,
     /// 12i-1: the last `idle` message (the apps keeping the screen awake).
     idle: Mutex<Option<Value>>,
+    /// 19k: the last `layout` message (where the windows are) and when it came, for the
+    /// assistant's "the Firefox on the left".
+    layout: Mutex<Option<(std::time::Instant, Value)>>,
 }
 
 /// 9e-c: the monitors a `sharing` message says are shared (empty when it's off or malformed).
@@ -375,6 +378,7 @@ fn serve(app: &AppHandle, stream: UnixStream) {
             }
             // 6e: where the windows are, for the workspace overview.
             Some("layout") => {
+                *c.layout.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), msg.clone()));
                 let _ = app.emit("kompact-layout", msg);
             }
             other => warn!("compositor: unknown message type {other:?}"),
@@ -383,6 +387,11 @@ fn serve(app: &AppHandle, stream: UnixStream) {
 }
 
 impl Compositor {
+    /// 19k: the last `layout` message, if it came after `since`.
+    pub fn layout_since(&self, since: std::time::Instant) -> Option<Value> {
+        self.layout.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|(t, _)| *t >= since).map(|(_, v)| v.clone())
+    }
+
     /// 9e-c: the last `sharing` message.
     pub fn sharing_message(&self) -> Option<Value> {
         self.sharing.lock().unwrap_or_else(|e| e.into_inner()).clone()

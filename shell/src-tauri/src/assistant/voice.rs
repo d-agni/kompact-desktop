@@ -31,9 +31,15 @@ pub const MODELS: [&str; 3] = ["small.en", "base.en", "tiny.en"];
 /// Words he's likely to hear, so whisper spells them our way.
 const PROMPT: &str = "Siva, volume, mute, unmute, Firefox, Files, terminal, desktop, Do Not Disturb, dark mode, light mode, side by side, Bluetooth, Wi-Fi, screenshot.";
 /// `PROMPT` and (19e) the routines' names, so "set up for coding" is spelled as saved.
+/// 19j: and your own words (Settings → Assistant → Learn my voice).
 fn prompt() -> String {
     let names: Vec<String> = super::routines::load().into_iter().map(|r| r.name).collect();
-    if names.is_empty() { PROMPT.to_string() } else { format!("{PROMPT} Set up for {}.", names.join(", ")) }
+    let mut p = if names.is_empty() { PROMPT.to_string() } else { format!("{PROMPT} Set up for {}.", names.join(", ")) };
+    let words = super::learn::load().words;
+    if !words.is_empty() {
+        p.push_str(&format!(" {}.", words.join(", ")));
+    }
+    p
 }
 /// Threads for whisper (the Ryzen 3 3100 has 8; the desktop and the sound keep the rest).
 const THREADS: &str = "4";
@@ -285,6 +291,13 @@ pub fn listening() -> bool {
     LISTENING.load(Ordering::Relaxed) != 0
 }
 
+/// 19j: what the training session gets: the words, or why there are none.
+#[derive(Debug, Clone, Serialize)]
+pub struct Listened {
+    pub text: Option<String>,
+    pub note: Option<String>,
+}
+
 /// What was heard, or why nothing was.
 pub enum Heard {
     Text(String),
@@ -420,7 +433,8 @@ pub fn transcribe(pcm: &[u8]) -> Result<Option<String>, String> {
     let mut child = Command::new("nice")
         .args(["-n", "10", "whisper-cli", "-m"])
         .arg(&model)
-        .args(["-t", THREADS, "-l", "en", "-np", "-nt", "-otxt", "-ac", &audio_ctx(ms).to_string(), "--prompt", &prompt(), "-f", "-"])
+        // small.en: 6 threads (2.7 → 2.4 s for a 4 s clip here; it runs briefly, at nice 10).
+        .args(["-t", if name == "small.en" { "6" } else { THREADS }, "-l", "en", "-np", "-nt", "-otxt", "-ac", &audio_ctx(ms).to_string(), "--prompt", &prompt(), "-f", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -686,6 +686,7 @@ function asCall(cmd, args) {
 
 async function loadAssistant() {
   void loadRoutines();
+  void loadLearnt();
   const [list, v, sp, md] = await Promise.all([asCall("assistant_activity"), asCall("voice_state"), asCall("speech_state"), asCall("model_state")]);
   model = md;
   activity = list || [];
@@ -758,6 +759,130 @@ function renderActivity() {
   if (!activity.length) list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: "Nothing yet. What you ask Siva shows up here." }));
   /** @type {HTMLButtonElement} */ ($("as-clear")).disabled = !activity.length;
 }
+
+// ---- 19j: learn my voice ----
+
+/** @typedef {{phrases: [string, string][], word_fixes: [string, string][], words: string[], training: string[]}} Learnt */
+/** @type {Learnt | null} */
+let learnt = null;
+/** The training session: which phrase, how many learnt, and whether it's listening. */
+const lv = { i: 0, learnt: 0, busy: false, on: false };
+
+async function loadLearnt() {
+  learnt = await asCall("voice_learnt");
+  renderLearnt();
+}
+
+function renderLearnt() {
+  const list = $("lv-list");
+  const l = learnt;
+  /** @type {HTMLTextAreaElement} */ ($("lv-words")).value = (l?.words || []).join("\n");
+  const rows = (l?.phrases || []).slice().reverse().map(([heard, meant]) => {
+    const row = Object.assign(document.createElement("div"), { className: "row" });
+    row.append(netLabel(`“${heard}” → ${meant}`, "heard → meant"));
+    const b = Object.assign(document.createElement("button"), { className: "btn", type: "button", textContent: "Forget" });
+    b.addEventListener("click", async () => {
+      const st = await asCall("voice_learnt_change", { forget: heard });
+      if (st) learnt = st;
+      renderLearnt();
+    });
+    row.append(b);
+    return row;
+  });
+  list.replaceChildren(...rows);
+  if (l?.word_fixes.length) {
+    list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: `Words it puts right everywhere: ${l.word_fixes.map(([a, b]) => `${a} → ${b}`).join(", ")}` }));
+  }
+  if (!rows.length) list.append(Object.assign(document.createElement("div"), { className: "row muted", textContent: "Nothing learnt yet. Train it, or fix what it mishears with ✎." }));
+  /** @type {HTMLButtonElement} */ ($("lv-clear")).disabled = !rows.length;
+}
+
+function lvShow() {
+  const phrases = learnt?.training || [];
+  if (lv.i >= phrases.length) {
+    lv.on = false;
+    $("lv-train").hidden = true;
+    $("lv-start").textContent = "Train Again";
+    $("lv-status").textContent = lv.learnt ? `Training done: learnt ${lv.learnt} new thing${lv.learnt === 1 ? "" : "s"} about your voice.` : "Training done: it heard you right every time.";
+    void loadLearnt();
+    return;
+  }
+  $("lv-count").textContent = `${lv.i + 1} of ${phrases.length}.`;
+  $("lv-phrase").textContent = phrases[lv.i];
+  $("lv-heard").textContent = "Press Listen, wait for the chime, then say it as you would to Siva.";
+  $("lv-heard").classList.remove("learnt");
+}
+
+$("lv-start").addEventListener("click", async () => {
+  if (!learnt) await loadLearnt();
+  Object.assign(lv, { i: 0, learnt: 0, busy: false, on: true });
+  $("lv-train").hidden = false;
+  $("lv-status").textContent = "";
+  lvShow();
+});
+$("lv-listen").addEventListener("click", async () => {
+  if (lv.busy || !lv.on) return;
+  lv.busy = true;
+  const meant = learnt?.training[lv.i] || "";
+  const heardEl = $("lv-heard");
+  heardEl.classList.remove("learnt");
+  heardEl.textContent = "Listening… wait for the chime, then speak.";
+  /** @type {{text: string | null, note: string | null} | null} */
+  const r = await asCall("voice_hear");
+  lv.busy = false;
+  if (!lv.on) return;
+  if (!r?.text) {
+    heardEl.textContent = r?.note || "I didn't hear anything. Try again.";
+    return;
+  }
+  const isNew = await asCall("voice_learn", { heard: r.text, meant });
+  if (isNew) {
+    lv.learnt++;
+    heardEl.classList.add("learnt");
+    heardEl.textContent = `Heard “${r.text}”: learnt.`;
+  } else {
+    heardEl.textContent = `Heard “${r.text}”: right.`;
+  }
+  setTimeout(() => {
+    if (!lv.on || lv.busy) return;
+    lv.i++;
+    lvShow();
+  }, 1400);
+});
+$("lv-skip").addEventListener("click", () => {
+  if (lv.busy) return;
+  lv.i++;
+  lvShow();
+});
+$("lv-stop").addEventListener("click", () => {
+  lv.on = false;
+  if (lv.busy) void asCall("voice_cancel");
+  $("lv-train").hidden = true;
+  void loadLearnt();
+});
+$("lv-words-save").addEventListener("click", async () => {
+  const words = /** @type {HTMLTextAreaElement} */ ($("lv-words")).value.split("\n").map((w) => w.trim()).filter(Boolean);
+  const st = await asCall("voice_learnt_change", { words });
+  if (st) {
+    learnt = st;
+    $("lv-status").textContent = `Saved ${st.words.length} word${st.words.length === 1 ? "" : "s"}.`;
+  }
+  renderLearnt();
+});
+$("lv-clear").addEventListener("click", () =>
+  ask("Forget what Siva learnt about your voice?", "The corrections and your words are deleted from this PC. You can train it again any time.", [
+    ["Cancel", () => {}],
+    [
+      "Forget All",
+      async () => {
+        const st = await asCall("voice_learnt_change", { clear: true });
+        if (st) learnt = st;
+        renderLearnt();
+      },
+      true,
+    ],
+  ]),
+);
 
 // ---- 19e: routines ----
 

@@ -38,6 +38,10 @@ let hovering = false;
 /** The confirm card on screen (its id), to cancel it if the HUD is closed. */
 let card = 0;
 let typing = false;
+/** 19j: what was heard for the request on screen (before Siva's own corrections), for ✎. */
+let lastRaw = "";
+/** 19j: typing to put `lastRaw` right: the pair is learnt. */
+let fixing = "";
 /** 19h-2: its reply is being said aloud (the wave follows the voice). */
 let speaking = false;
 
@@ -46,7 +50,7 @@ const STATUS = /** @type {Record<string, string>} */ ({ speaking: "", happy: "DO
 /** @param {State} s @param {string} status */
 function setState(s, status) {
   state = s;
-  document.body.className = `s-${s}${speaking ? " talking" : ""}${planEl.childElementCount ? " planning" : ""}`;
+  document.body.className = `s-${s}${speaking ? " talking" : ""}${planEl.childElementCount ? " planning" : ""}${lastRaw ? " can-fix" : ""}`;
   hud.hidden = s === "hidden";
   statusEl.textContent = status;
   animate();
@@ -91,7 +95,6 @@ function reset() {
   replyEl.textContent = "";
   buttonsEl.replaceChildren();
   typeForm.hidden = true;
-  typeInput.value = "";
   delete document.body.dataset.mood;
   card = 0;
 }
@@ -100,18 +103,24 @@ async function listen() {
   const my = ++session;
   void keyboard(false);
   reset();
+  lastRaw = "";
+  fixing = "";
   micEl.textContent = "";
   setState("waking", "WAKING THE MIC · WAIT FOR THE CHIME");
   const r = await invoke("assistant_listen");
   if (my === session) showReply(r);
 }
 
-async function openType() {
+/** @param {string} [prefill] what to start from @param {string} [fix] what was heard, to learn from */
+async function openType(prefill, fix) {
   const my = ++session;
   invoke("voice_cancel");
   reset();
+  lastRaw = "";
+  fixing = fix || "";
+  typeInput.value = prefill || "";
   typeForm.hidden = false;
-  setState("typing", "TYPE TO ME");
+  setState("typing", fixing ? "WHAT DID YOU SAY? I'LL REMEMBER" : "TYPE TO ME");
   await keyboard(true);
   if (my === session) typeInput.focus();
 }
@@ -125,7 +134,9 @@ typeForm.addEventListener("submit", async (e) => {
   typeForm.hidden = true;
   heardEl.textContent = `“${text}”`;
   setState("thinking", "WORKING");
-  const r = await invoke("assistant_ask", { text });
+  const heard = fixing || null;
+  fixing = "";
+  const r = await invoke("assistant_ask", { text, heard });
   if (my === session) showReply(r);
 });
 typeInput.addEventListener("keydown", (e) => {
@@ -211,6 +222,10 @@ $("stop").addEventListener("click", () => {
 });
 $("speak").addEventListener("click", () => void listen());
 $("kbd").addEventListener("click", () => void openType());
+$("fix").addEventListener("click", () => {
+  const shown = heardEl.textContent.replace(/^“|”$/g, "");
+  void openType(shown, lastRaw);
+});
 hud.addEventListener("pointerenter", () => (hovering = true));
 hud.addEventListener("pointerleave", () => (hovering = false));
 
@@ -330,6 +345,7 @@ if (tauri) {
     else if (s === "ready" && state === "waking") setState("listening", "LISTENING · SPEAK NOW");
     else if (s === "thinking" && (state === "listening" || state === "waking")) {
       heardEl.textContent = `“${detail}”`;
+      lastRaw = /** @type {any} */ (e.payload).raw || detail;
       setState("thinking", "WORKING");
     }
   });

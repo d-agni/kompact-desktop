@@ -67,6 +67,10 @@ fn tool_lines() -> String {
 
 const EXAMPLES: &str = r#"Examples:
 make it louder -> change_volume(by=10)
+open firefox and make it fill the screen -> open_app(app="firefox"); place_window(window="firefox", where="fill")
+bring the terminal up -> focus_window(window="terminal")
+close the firefox on the left -> close_window(window="firefox on the left")
+there are two firefox windows -> none
 it's way too loud -> change_volume(by=-20)
 i can't hear anything -> mute(on=False); set_volume(percent=60)
 get the browser out of the way -> minimize_window(window="firefox")
@@ -95,11 +99,44 @@ pub fn prompt(text: &str) -> String {
     format!("{}{}<|im_end|>\n<|im_start|>assistant\n", prefix(), words.trim())
 }
 
-/// The grammar its answer must follow: `none`, or up to `MAX_CALLS` calls to tools that exist.
+/// The grammar its answer must follow: `none`, or up to `MAX_CALLS` calls, each to a tool that
+/// exists with its own details by name and only the values they can have
+/// (`place_window(window="files", where="left")`): a small model can't invent `where="maximize"`.
 pub fn grammar() -> String {
-    let names: Vec<String> = TOOLS.iter().map(|t| format!("\"{}\"", t.name)).collect();
-    let more = "(\"; \" call)?".repeat(MAX_CALLS - 1);
-    format!("root ::= \"none\" | call {more}\ncall ::= ({}) \"(\" args \")\"\nargs ::= [^()\\n;]*\n", names.join(" | "))
+    let rule = |name: &str| format!("t-{}", name.replace('_', "-"));
+    let mut g = String::from("root ::= \"none\" | call");
+    g.push_str(&"(\"; \" call)?".repeat(MAX_CALLS - 1));
+    g.push_str(&format!("\ncall ::= {}\n", TOOLS.iter().map(|t| rule(t.name)).collect::<Vec<_>>().join(" | ")));
+    for t in TOOLS {
+        let mut body = format!("\"{}(\"", t.name);
+        let mut first = true;
+        for p in t.params {
+            let value = match p.arg {
+                Arg::Int { .. } => "int".to_string(),
+                Arg::Bool => "bool".to_string(),
+                Arg::OneOf(words) => format!("({})", words.iter().map(|w| format!("\"\\\"{w}\\\"\"")).collect::<Vec<_>>().join(" | ")),
+                Arg::Text { .. } => "text".to_string(),
+            };
+            let sep = if first { "" } else { ", " };
+            let part = format!("\"{sep}{}=\" {value}", p.name);
+            if p.required {
+                body.push_str(&format!(" {part}"));
+                first = false;
+            } else {
+                body.push_str(&format!(" ({part})?"));
+            }
+        }
+        body.push_str(" \")\"");
+        g.push_str(&format!("{} ::= {body}\n", rule(t.name)));
+    }
+    g.push_str("int ::= \"-\"? [0-9] [0-9]? [0-9]?\nbool ::= \"True\" | \"False\"\ntext ::= \"\\\"\" [^\"\\n]+ \"\\\"\"\n");
+    g
+}
+
+/// 19l: only the steps that are about `clause` (`grounded`), so a guess's stray extras ("open
+/// firefox and maximize" came back with a focus and a minimize too) are dropped.
+pub fn keep_grounded(steps: Vec<Step>, clause: &str) -> Vec<Step> {
+    steps.into_iter().filter(|s| grounded(s, clause)).collect()
 }
 
 // ---- reading its answer (pure) ----
@@ -201,22 +238,74 @@ fn tool_words(tool: &str) -> &'static [&'static str] {
         "list_windows" => &["window", "open", "running"],
         "system_status" => &["slow", "lag", "cpu", "memory", "ram", "busy", "computer", "fan", "hot", "freez", "stuck"],
         "disk_space" => &["disk", "space", "storage", "full", "drive"],
+        "date_time" => &["time", "date", "day", "clock", "today"],
         "sound_check" => &["sound", "audio", "cut", "choppy", "crackl", "quality", "bad", "stutter", "phone"],
         _ => &[],
     }
 }
 
-/// 19f-2: whether a step the model proposed is about what was said: the request has one of its
-/// tool's words, or the app / window it names. ("Maximate Firefox", misheard, came back as
-/// "volume up 100": not about it.)
+/// 19f-2, 19l: whether a step the model proposed is about what was said: the request has one of
+/// its tool's own words ("maximi" for placing, "close", "loud" for the volume). Naming the app
+/// isn't enough: "Open Firefox and maximize" came back with a focus and a minimize of Firefox
+/// too, and "Maximate Firefox" (misheard) as "volume up 100".
 pub fn grounded(step: &Step, text: &str) -> bool {
     let said = super::rules::normalize(text);
-    let words: Vec<&str> = said.split_whitespace().collect();
-    let named = ["app", "window", "device"].iter().filter_map(|k| step.args.get(*k).and_then(Value::as_str)).any(|name| {
-        let name = super::rules::normalize(name);
-        !name.is_empty() && name.split_whitespace().all(|n| words.contains(&n))
-    });
-    named || tool_words(step.tool).iter().any(|k| words.iter().any(|w| w.starts_with(k)))
+    tool_words(step.tool).iter().any(|k| said.split_whitespace().any(|w| w.starts_with(k)))
+}
+
+/// 19k: whether `text` is about the desktop at all (any tool's words): if not, it's talk.
+pub fn about_desktop(text: &str) -> bool {
+    let said = super::rules::normalize(text);
+    TOOLS.iter().any(|t| tool_words(t.name).iter().any(|k| said.split_whitespace().any(|w| w.starts_with(k))))
+}
+
+// ---- talking (pure) ----
+
+/// Siva, as a person to talk to. Kept the same every time, so the prompt cache keeps it.
+pub fn chat_prefix() -> String {
+    "<|im_start|>system\nYou are Siva, the assistant built into this person's Linux desktop. Talk like a warm, friendly, \
+quick-witted person: one or two short sentences, plain words, no lists, no markdown, no emojis, and never \"as an AI\". \
+The desktop itself does what they ask (windows, apps, sound, settings); you can't browse the internet, read their files \
+or see their screen, and you say so in a few words when it matters. If you don't know something, say so. Never claim \
+you did something. \"user\" is the person; \"assistant\" is you.<|im_end|>\n"
+        .to_string()
+}
+
+/// The prompt for talking: who Siva is, the time, the last few exchanges, then `text`.
+pub fn chat_prompt(text: &str, history: &[(String, String)], now: &str) -> String {
+    let clean = |t: &str| t.chars().map(|c| if c.is_control() { ' ' } else { c }).take(300).collect::<String>();
+    let mut p = chat_prefix();
+    p.push_str(&format!("<|im_start|>system\n{now}<|im_end|>\n"));
+    for (you, siva) in history {
+        p.push_str(&format!("<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n{}<|im_end|>\n", clean(you), clean(siva)));
+    }
+    p.push_str(&format!("<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n", clean(text).trim()));
+    p
+}
+
+/// What the model said, tidied: its own markers out, at most three sentences / 320 characters.
+pub fn tidy_talk(out: &str) -> Option<String> {
+    let text = out.replace("[end of text]", "");
+    let text = text.split("<|im_end|>").next().unwrap_or("").split("<|im_start|>").next().unwrap_or("");
+    let text = text.trim().trim_start_matches("Siva:").trim();
+    // "I'm sorry, but as an AI, I don't …": the persona says not to; small models still do.
+    let text = ["as an AI, ", "As an AI, ", "as an AI ", "As an AI "].iter().fold(text.to_string(), |t, p| t.replace(p, ""));
+    let mut kept = String::new();
+    let mut sentences = 0;
+    for c in text.chars() {
+        kept.push(c);
+        if ".!?".contains(c) {
+            sentences += 1;
+            if sentences == 3 {
+                break;
+            }
+        }
+        if kept.chars().count() >= 320 {
+            break;
+        }
+    }
+    let kept = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    kept.chars().any(char::is_alphanumeric).then_some(kept)
 }
 
 /// A short name for the prompt cache, changing whenever the instructions or the model do.
@@ -261,18 +350,21 @@ pub fn state() -> ModelState {
     ModelState { ready: missing.is_none(), model: MODEL_NAME, missing }
 }
 
-/// Ask the model what `text` means as steps (blocking: off the main thread; ~1.5–2.5 s here).
-pub fn ask(text: &str) -> Result<Vec<Step>, String> {
+/// Runs llama-completion on `prompt`, whose first part is `shared` (kept in its own prompt
+/// cache, `kind` naming it), with `args`. Its output, and whether the cache was made now.
+fn run_model(kind: &str, shared: &str, prompt: &str, args: &[&str]) -> Result<(String, bool, u128), String> {
     let model = model_file().ok_or("the model isn't there")?;
     let size = std::fs::metadata(&model).map(|m| m.len()).unwrap_or(0);
     let cache_dir = home_dir("XDG_CACHE_HOME", ".cache").ok_or("no home folder")?.join("kompact").join("llm");
     std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    let cache = cache_dir.join(cache_key(&prefix(), size));
+    let name = format!("{kind}-{}", cache_key(shared, size));
+    let cache = cache_dir.join(&name);
     let fresh = !cache.is_file();
     if fresh {
-        // Caches of older instructions or models (20 MB each).
+        // This kind's caches of older instructions or models (20 MB each).
         for old in std::fs::read_dir(&cache_dir).into_iter().flatten().flatten() {
-            if old.file_name().to_string_lossy().starts_with("prompt-") {
+            let n = old.file_name().to_string_lossy().to_string();
+            if n.starts_with(&format!("{kind}-")) || (kind == "tools" && n.starts_with("prompt-")) {
                 let _ = std::fs::remove_file(old.path());
             }
         }
@@ -282,8 +374,9 @@ pub fn ask(text: &str) -> Result<Vec<Step>, String> {
     cmd.args(["-n", "10", "llama-completion", "-m"])
         .arg(&model)
         // --no-repack: repacking the weights for AVX2 cost 0.8 s a run, for no faster answers.
-        .args(["-no-cnv", "--no-display-prompt", "--simple-io", "--no-warmup", "--no-repack", "--temp", "0", "-t", THREADS, "-c", CONTEXT, "-n", PREDICT])
-        .args(["--grammar", &grammar(), "-p", &prompt(text), "--prompt-cache"])
+        .args(["-no-cnv", "--no-display-prompt", "--simple-io", "--no-warmup", "--no-repack", "-t", THREADS, "-c", CONTEXT])
+        .args(args)
+        .args(["-p", prompt, "--prompt-cache"])
         .arg(&cache);
     // The first run writes the cache (the instructions and these words); later ones only read
     // it, so it keeps just what every request shares.
@@ -291,15 +384,26 @@ pub fn ask(text: &str) -> Result<Vec<Step>, String> {
         cmd.arg("--prompt-cache-ro");
     }
     let out = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(|e| format!("can't start llama-completion: {e}"))?;
-    let ms = started.elapsed().as_millis();
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         warn!("model: llama-completion failed ({}): {}", out.status, err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or(""));
         return Err("the model didn't run".into());
     }
-    let answer = String::from_utf8_lossy(&out.stdout).replace("[end of text]", "");
+    Ok((String::from_utf8_lossy(&out.stdout).replace("[end of text]", ""), fresh, started.elapsed().as_millis()))
+}
+
+/// Ask the model what `text` means as steps (blocking: off the main thread; ~1.5–2.5 s here).
+pub fn ask(text: &str) -> Result<Vec<Step>, String> {
+    let (answer, fresh, ms) = run_model("tools", &prefix(), &prompt(text), &["--temp", "0", "-n", PREDICT, "--grammar", &grammar()])?;
     info!("model: {text:?} → {} in {ms} ms{}", answer.trim(), if fresh { " (prompt cache made)" } else { "" });
     read_answer(&answer)
+}
+
+/// 19k: talk: Siva's answer to `text`, given the last exchanges (blocking; ~2–4 s here).
+pub fn talk(text: &str, history: &[(String, String)], now: &str) -> Result<String, String> {
+    let (answer, fresh, ms) = run_model("talk", &chat_prefix(), &chat_prompt(text, history, now), &["--temp", "0.6", "-n", "48"])?;
+    info!("model: talk {text:?} → {:?} in {ms} ms{}", answer.trim(), if fresh { " (prompt cache made)" } else { "" });
+    tidy_talk(&answer).ok_or_else(|| "the model had nothing to say".into())
 }
 
 /// Make the prompt cache in the background (the first run takes ~12 s here), half a minute
@@ -312,10 +416,15 @@ pub fn warm_up() {
             return;
         }
         let size = std::fs::metadata(&model).map(|m| m.len()).unwrap_or(0);
-        let cached = home_dir("XDG_CACHE_HOME", ".cache").map(|d| d.join("kompact").join("llm").join(cache_key(&prefix(), size)).is_file());
-        if cached == Some(false) {
+        let dir = home_dir("XDG_CACHE_HOME", ".cache").map(|d| d.join("kompact").join("llm"));
+        let cached = |kind: &str, shared: &str| dir.as_ref().map(|d| d.join(format!("{kind}-{}", cache_key(shared, size))).is_file());
+        if cached("tools", &prefix()) == Some(false) {
             info!("model: making the prompt cache");
             let _ = ask("hello");
+        }
+        if cached("talk", &chat_prefix()) == Some(false) {
+            info!("model: making the talking prompt cache");
+            let _ = talk("hello", &[], "");
         }
     });
 }
@@ -347,10 +456,16 @@ mod tests {
     #[test]
     fn the_grammar() {
         let g = grammar();
-        assert!(g.starts_with("root ::= \"none\" | call (\"; \" call)?(\"; \" call)?(\"; \" call)?\n"), "{g}");
+        assert!(g.starts_with("root ::= \"none\" | call(\"; \" call)?(\"; \" call)?(\"; \" call)?\n"), "{g}");
         for t in TOOLS {
-            assert!(g.contains(&format!("\"{}\"", t.name)));
+            assert!(g.contains(&format!("{} ::= \"{}(\"", format!("t-{}", t.name.replace('_', "-")), t.name)), "{}", t.name);
         }
+        // Each detail by name, and only its own values.
+        assert!(g.contains(r#"t-place-window ::= "place_window(" "window=" text ", where=" ("\"left\"" | "\"right\"" | "\"fill\"" | "\"restore\"") ")""#), "{g}");
+        assert!(g.contains(r#"t-mute ::= "mute(" "on=" bool (", device=" ("\"output\"" | "\"microphone\""))? ")""#), "{g}");
+        assert!(g.contains(r#"t-lock-screen ::= "lock_screen(" ")""#));
+        assert!(g.contains(r#"t-list-windows ::= "list_windows(" ("app=" text)? ")""#), "an optional first detail has no comma");
+        assert!(g.lines().all(|l| l.is_empty() || l.contains(" ::= ")), "one rule a line");
     }
 
     #[test]
@@ -384,17 +499,68 @@ mod tests {
     }
 
     #[test]
+    fn stray_steps_are_dropped() {
+        let st = |t: &'static str, a: Value| Step { tool: t, args: a };
+        // From the log: "Open Firefox and maximize" → open, focus, minimize, maximize.
+        let guess = vec![
+            st("open_app", json!({"app": "Firefox"})),
+            st("focus_window", json!({"window": "Firefox"})),
+            st("minimize_window", json!({"window": "Firefox"})),
+            st("place_window", json!({"window": "Firefox", "where": "fill"})),
+        ];
+        let kept: Vec<&str> = keep_grounded(guess, "Open Firefox and maximize").iter().map(|s| s.tool).collect();
+        assert_eq!(kept, ["open_app", "place_window"]);
+        let kept: Vec<&str> = keep_grounded(vec![st("change_volume", json!({"by": 100})), st("media", json!({"action": "next"}))], "make it sparkle").iter().map(|s| s.tool).collect();
+        assert!(kept.is_empty());
+    }
+
+    #[test]
     fn about_what_was_said() {
         let st = |t: &'static str, a: Value| Step { tool: t, args: a };
         // From the 2026-10-24 log.
         assert!(!grounded(&st("change_volume", json!({"by": 100})), "Maximate Firefox"), "misheard: asks first");
-        assert!(grounded(&st("open_app", json!({"app": "Firefox"})), "Mac to my Firefox"), "it names the app");
+        assert!(!grounded(&st("open_app", json!({"app": "Firefox"})), "Mac to my Firefox"), "naming the app isn't enough (it was misheard)");
+        assert!(grounded(&st("open_app", json!({"app": "Firefox"})), "start up the browser"));
         assert!(grounded(&st("minimize_window", json!({"window": "firefox"})), "Get browser out of the way"));
         assert!(grounded(&st("close_window", json!({"window": "Firefox"})), "Close"));
         assert!(grounded(&st("change_volume", json!({"by": -20})), "it's way too loud"));
         assert!(grounded(&st("now_playing", json!({})), "what song is this"));
         assert!(!grounded(&st("power", json!({"action": "restart"})), "the cat sat on all"));
         assert!(!grounded(&st("place_window", json!({"window": "all files", "where": "left"})), "Me and all the devices"));
+    }
+
+    #[test]
+    fn talking() {
+        let h = vec![("open firefox".to_string(), "Opening Firefox.".to_string())];
+        let p = chat_prompt("how are you\n", &h, "It's 2:05 PM on Saturday, 24 October.");
+        assert!(p.starts_with(&chat_prefix()), "the persona first, for the cache");
+        assert!(p.contains("<|im_start|>user\nopen firefox<|im_end|>\n<|im_start|>assistant\nOpening Firefox.<|im_end|>"));
+        assert!(p.ends_with("<|im_start|>user\nhow are you<|im_end|>\n<|im_start|>assistant\n"));
+        assert_eq!(tidy_talk(" Siva: I'm well! You? Great. Fine. More.<|im_end|>junk").as_deref(), Some("I'm well! You? Great."));
+        assert_eq!(tidy_talk("[end of text]"), None);
+        assert_eq!(tidy_talk("I'm sorry, but as an AI, I don't have the weather.").as_deref(), Some("I'm sorry, but I don't have the weather."));
+        assert!(tidy_talk(&"word ".repeat(200)).unwrap().chars().count() <= 320);
+        assert!(about_desktop("make it louder") && about_desktop("close the firefox"));
+        assert!(!about_desktop("tell me a joke") && !about_desktop("what should I cook tonight"));
+    }
+
+    /// Talking with the real model: `cargo test talk_live -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn talk_live() {
+        let now = "It's 6:40 PM on Saturday, 24 October.";
+        let mut h: Vec<(String, String)> = Vec::new();
+        for a in ["tell me a joke", "what should I do on a rainy evening", "what's the weather like", "I'm tired today", "what did I just tell you", "can you read my emails"] {
+            let t = std::time::Instant::now();
+            let r = talk(a, &h, now);
+            println!("{a:?} ({} ms): {r:?}", t.elapsed().as_millis());
+            if let Ok(said) = r {
+                h.push((a.to_string(), said));
+                if h.len() > 4 {
+                    h.remove(0);
+                }
+            }
+        }
     }
 
     #[test]
@@ -410,6 +576,9 @@ mod tests {
     #[ignore]
     fn model_live() {
         let asks = [
+            "make it sparkle",
+            "Close the Firefox, which is put on, then let's type",
+            "Open Firefox and Max Max",
             "make it louder",
             "i can't hear anything",
             "move all files to left",
