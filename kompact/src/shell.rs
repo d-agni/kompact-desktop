@@ -2359,6 +2359,14 @@ impl Kompact {
                     self.place_to(&w, to);
                 }
             }
+            // 20b: the assistant's "send firefox to desktop 2" and "show the desktop".
+            Request::Send { id, workspace } => {
+                if let Some(w) = window(self, id) {
+                    self.activate_window(&w);
+                    self.send_focused_to_workspace(workspace - 1);
+                }
+            }
+            Request::ShowDesktop => self.toggle_show_desktop(),
             Request::Thumb(id) => self.thumbs.request(id),
             Request::Workspace(n) => self.switch_workspace(n - 1),
             Request::Layout => {

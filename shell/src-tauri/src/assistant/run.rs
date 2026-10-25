@@ -221,6 +221,12 @@ enum Undo {
     KeepAwake(bool),
     Wifi(bool),
     Bluetooth(bool),
+    /// 20b: a window back to its desktop (1-based).
+    SendBack { id: u64, desktop: u64 },
+    ShowDesktop,
+    Dock(crate::dock::DockPrefs),
+    /// A kompact setting's old value ("animations", "on").
+    Setting(String, String),
 }
 
 /// A request waiting on a confirmation card: its steps, how far it got, what it said so far.
@@ -384,6 +390,38 @@ fn place_line(app: &AppHandle, id: u64, to: &str) -> Result<(), String> {
     app.state::<Compositor>().send_line_pub("place", &format!("place {id} {to}\n"))
 }
 
+/// 20b: a window's desktop (1-based), from kompact's window list.
+fn window_desktop(app: &AppHandle, id: u64) -> Option<u64> {
+    let state = app.state::<Compositor>().last_state()?;
+    state.get("windows")?.as_array()?.iter().find(|w| w.get("id").and_then(Value::as_u64) == Some(id))?.get("workspace")?.as_u64()
+}
+
+/// 20b: a folder's path (the XDG user folders, as Files has them).
+fn folder_path(folder: &str) -> Option<std::path::PathBuf> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    if folder == "home" {
+        return Some(home);
+    }
+    if folder == "trash" {
+        return Some("trash:///".into());
+    }
+    if folder == "screenshots" {
+        return Some(home.join("Pictures").join("Screenshots"));
+    }
+    let xdg = match folder {
+        "downloads" => "DOWNLOAD",
+        "documents" => "DOCUMENTS",
+        "pictures" => "PICTURES",
+        "music" => "MUSIC",
+        "videos" => "VIDEOS",
+        "desktop" => "DESKTOP",
+        _ => return None,
+    };
+    let out = std::process::Command::new("xdg-user-dir").arg(xdg).output().ok().filter(|o| o.status.success());
+    let path = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|p| !p.is_empty() && *p != home.to_string_lossy());
+    Some(path.map(std::path::PathBuf::from).unwrap_or_else(|| home.join(folder[..1].to_uppercase() + &folder[1..])))
+}
+
 fn current_desktop(app: &AppHandle) -> Option<u64> {
     app.state::<Compositor>().last_state()?.get("workspace")?.as_u64()
 }
@@ -533,7 +571,14 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             let overlay = app.state::<crate::overlay::Overlay>();
             let apps: Vec<AppCand> = overlay.apps().into_iter().map(|a| AppCand { about: format!("{} {}", a.keywords, a.comment), id: a.id, name: a.name }).collect();
             let want = str_arg("app");
-            let found = best_app(&want, &apps).ok_or_else(|| format!("I can't find an app called “{want}”."))?;
+            // 20b: no app called that, but a site is ("open youtube", "open gmail"): the site.
+            let Some(found) = best_app(&want, &apps) else {
+                if let Some(url) = super::browser::site_for(&want) {
+                    overlay.open_path(app, std::path::PathBuf::from(url));
+                    return done(format!("Opening {want} in the browser."), None);
+                }
+                return Err(format!("I can't find an app called “{want}”."));
+            };
             // The first app opened keeps the list: windows from every app this request opens are new.
             if ctx.before_open.is_none() {
                 ctx.before_open = Some(windows(app).iter().map(|w| w.id).collect());
@@ -619,6 +664,103 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             send(app, "lock", None)?;
             done("Locking.", None)
         }
+        // ---- 20b: the rest of the desktop ----
+        "show_part" => {
+            let part = str_arg("part");
+            let (layout_right, handle) = (layout(app, &[]).await.1, app.clone());
+            let p = part.clone();
+            app.run_on_main_thread(move || {
+                let overlay = handle.state::<crate::overlay::Overlay>();
+                let x = f64::from(layout_right.0 + layout_right.2);
+                match p.as_str() {
+                    "control-center" => overlay.open_status(&handle, "control".into(), x),
+                    "notifications" => overlay.open_status(&handle, "center".into(), x),
+                    "switcher" => {
+                        let _ = handle.state::<Compositor>().send("switcher-open", None);
+                    }
+                    other => {
+                        let mode = match other {
+                            "menu" => "menu",
+                            "spotlight" => "spotlight",
+                            "launchpad" => "launchpad",
+                            _ => "spaces",
+                        };
+                        if let Some(m) = crate::overlay::Mode::parse(mode) {
+                            overlay.toggle(&handle, m, "the assistant");
+                        }
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+            done(format!("{}.", rules::describe(s)), None)
+        }
+        "open_settings" => {
+            let pane = a.get("pane").and_then(Value::as_str).map(str::to_string);
+            let handle = app.clone();
+            app.run_on_main_thread(move || crate::settings::open_settings(handle, pane)).map_err(|e| e.to_string())?;
+            done(format!("{}.", rules::describe(s)), None)
+        }
+        "open_folder" => {
+            let path = folder_path(&str_arg("folder")).ok_or("I can't find that folder.")?;
+            app.state::<crate::overlay::Overlay>().open_path(app, path);
+            done(format!("{}.", rules::describe(s)), None)
+        }
+        "open_link" => {
+            let url = super::browser::web_address(&str_arg("url")).ok_or("That doesn't look like a web address.")?;
+            app.state::<crate::overlay::Overlay>().open_path(app, std::path::PathBuf::from(&url));
+            done(format!("Opening {url}."), None)
+        }
+        "search_web" => {
+            let site = a.get("site").and_then(Value::as_str).unwrap_or("web");
+            let url = super::browser::search_url(site, &str_arg("query"));
+            app.state::<crate::overlay::Overlay>().open_path(app, std::path::PathBuf::from(&url));
+            done(format!("{}.", rules::describe(s)), None)
+        }
+        "move_to_desktop" => {
+            let w = find_window(app, &str_arg("window"), ctx).await?;
+            let n = int_arg("number");
+            let was = window_desktop(app, w.id).unwrap_or_else(|| current_desktop(app).unwrap_or(1));
+            app.state::<Compositor>().send_line_pub("send", &format!("send {} {n}\n", w.id))?;
+            done(format!("Moved {} to desktop {n}.", w.name), (was != n as u64).then_some(Undo::SendBack { id: w.id, desktop: was }))
+        }
+        "show_desktop" => {
+            send(app, "show-desktop", None)?;
+            done("There's your desktop.", Some(Undo::ShowDesktop))
+        }
+        "dock" => {
+            let old = crate::dock::dock_prefs();
+            let mut new = old;
+            if let Some(p) = a.get("position").and_then(Value::as_str) {
+                new.position = match p {
+                    "left" => crate::dock::Side::Left,
+                    "right" => crate::dock::Side::Right,
+                    _ => crate::dock::Side::Bottom,
+                };
+            }
+            if let Some(h) = a.get("hide").and_then(Value::as_str) {
+                new.hide = match h {
+                    "never" => crate::dock::Hide::Never,
+                    "always" => crate::dock::Hide::Always,
+                    _ => crate::dock::Hide::Smart,
+                };
+            }
+            if let Some(z) = a.get("size").and_then(Value::as_str) {
+                new.size = match z {
+                    "small" => 36,
+                    "large" => 64,
+                    _ => 50,
+                };
+            }
+            crate::dock::set_dock_prefs(app.clone(), app.state::<Compositor>(), new)?;
+            done("The dock is changed.", Some(Undo::Dock(old)))
+        }
+        "desktop_setting" => {
+            let key = str_arg("setting");
+            let on = bool_arg("on");
+            let old = app.state::<Compositor>().last_settings().and_then(|v| v.get(key.replace('-', "_")).and_then(Value::as_bool));
+            crate::compositor::kompact_set(app.state::<Compositor>(), key.clone(), if on { "on" } else { "off" }.into())?;
+            done(format!("{}.", rules::describe(s)), old.map(|o| Undo::Setting(key, if o { "on" } else { "off" }.into())))
+        }
         "close_window" => {
             let ws = find_windows(app, &str_arg("window"), ctx).await?;
             for w in &ws {
@@ -688,6 +830,10 @@ async fn undo_one(app: &AppHandle, u: &Undo) -> Result<(), String> {
         }
         Undo::Wifi(on) => crate::network::network_wifi(*on).await,
         Undo::Bluetooth(on) => crate::bluetooth::bluetooth_power(*on).await,
+        Undo::SendBack { id, desktop } => app.state::<Compositor>().send_line_pub("send", &format!("send {id} {desktop}\n")),
+        Undo::ShowDesktop => send(app, "show-desktop", None),
+        Undo::Dock(old) => crate::dock::set_dock_prefs(app.clone(), app.state::<Compositor>(), *old),
+        Undo::Setting(key, value) => crate::compositor::kompact_set(app.state::<Compositor>(), key.clone(), value.clone()),
     }
 }
 
@@ -915,6 +1061,11 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
         if let Some(r) = clarify(app, text) {
             return r;
         }
+    }
+    // 20b: one stray word that names nothing ("Hit", "This", "Set": half-heard): say so at once,
+    // without the model (it took 3 s to say "Sorry, I can't assist with that").
+    if matches!(parsed, Parsed::Unknown(_)) && rules::normalize(text).split_whitespace().count() == 1 && !super::model::about_desktop(text) {
+        return reply("Sorry, I didn't catch that. Say it again?", "sorry");
     }
     match parsed {
         Parsed::Hello => reply("Vanakkam! What can I do for you?", "happy"),

@@ -103,7 +103,7 @@ fn placement(words: &[&str]) -> Option<(String, &'static str)> {
     } else {
         return None;
     };
-    let verbs = ["put", "move", "snap", "place", "send", "show"];
+    let verbs = ["put", "move", "snap", "place", "send", "show", "keep", "set", "have", "dock"];
     // 19k: "close the firefox on the left" is closing; "on the left" says which one.
     const OTHER: [&str; 14] = ["close", "quit", "exit", "kill", "minimize", "minimise", "hide", "maximize", "maximise", "focus", "switch", "bring", "open", "restore"];
     if words.first().is_some_and(|w| OTHER.contains(w)) {
@@ -119,10 +119,266 @@ fn placement(words: &[&str]) -> Option<(String, &'static str)> {
     (!name.is_empty()).then(|| (name.join(" "), to))
 }
 
+/// 20b: "open bluetooth settings", "show control center", "open my downloads", "search
+/// youtube for lofi music", "send firefox to desktop 2", "show the desktop", "move the dock to
+/// the left", "turn off animations".
+fn desktop_clause(c: &str, w: &[&str]) -> Option<Vec<Step>> {
+    let opens = ["open", "show", "go", "bring", "display", "launch", "take", "pull", "give", "get"].contains(w.first()?);
+    // A window verb before "all" is about windows ("minimize all applications"), not a part.
+    let about_windows = ["minimize", "minimise", "hide", "close", "quit", "exit", "kill", "restore", "maximize", "maximise"].contains(w.first()?);
+    if c.contains("quick settings") {
+        return Some(vec![step("show_part", json!({"part": "control-center"}))]);
+    }
+    if ["search apps", "search for an app", "find an app", "search for apps", "search applications"].contains(&c) {
+        return Some(vec![step("show_part", json!({"part": "spotlight"}))]);
+    }
+    // Settings, at a pane ("open the bluetooth setting", "change the wallpaper", "open about",
+    // "open sound": a pane's own name after open).
+    if has(w, &["settings", "setting", "preferences"]) && !about_windows && switch(w).is_none() {
+        let pane = pane_for(c);
+        return Some(vec![step("open_settings", pane.map(|p| json!({"pane": p})).unwrap_or(json!({})))]);
+    }
+    if let Some(p) = pane_named(c) {
+        return Some(vec![step("open_settings", json!({"pane": p}))]);
+    }
+    // Parts of the desktop.
+    let part = if c.contains("control center") || c.contains("control centre") || c.contains("quick settings") {
+        Some("control-center")
+    } else if c.contains("notification") {
+        Some("notifications")
+    } else if c.contains("spotlight") {
+        Some("spotlight")
+    } else if !about_windows && (c.contains("launchpad") || c.contains("all apps") || c.contains("my apps") || c.contains("app grid") || c.contains("all applications") || c.contains("all programs")) {
+        Some("launchpad")
+    } else if c.contains("overview") || c.contains("all desktops") || c.contains("mission control") || c.contains("workspaces") {
+        Some("overview")
+    } else if c.contains("window switcher") || c.contains("switcher") {
+        Some("switcher")
+    } else if has(w, &["menu"]) && (has(w, &["kompact", "compact", "logo", "main", "apple", "start", "system"]) || c == "open menu" || c == "show menu" || c == "open the menu" || c == "show the menu") {
+        Some("menu")
+    } else {
+        None
+    };
+    if let (Some(p), true) = (part, (opens || w.len() <= 3) && !about_windows) {
+        return Some(vec![step("show_part", json!({"part": p}))]);
+    }
+    // Folders.
+    if opens || first_is(w, "open") {
+        if let Some(f) = folder_for(w) {
+            return Some(vec![step("open_folder", json!({"folder": f}))]);
+        }
+    }
+    // Searching in the browser: "search youtube for x", "search for x on youtube", "google x",
+    // "look up x", "play x on youtube", "youtube x".
+    if let Some(s) = search(c) {
+        return Some(vec![s]);
+    }
+    for (site, name) in [("youtube", "youtube"), ("wikipedia", "wikipedia")] {
+        let q = c
+            .strip_prefix("play ")
+            .and_then(|r| r.strip_suffix(&format!(" on {name}")).or(r.strip_suffix(&format!(" in {name}"))))
+            .or_else(|| c.strip_prefix(&format!("{name} ")).filter(|r| !r.is_empty() && !["search", "for", "please"].contains(r)));
+        if let Some(q) = q {
+            return Some(vec![step("search_web", json!({"query": q.trim(), "site": site}))]);
+        }
+    }
+    // Web addresses: "go to youtube.com", "open github.com" (the dots are gone by now:
+    // "github com"), "go to en wikipedia org".
+    const ENDINGS: [&str; 14] = ["com", "org", "net", "io", "in", "dev", "ai", "co", "edu", "gov", "app", "uk", "me", "tv"];
+    let rest: Vec<&str> = w[1..].iter().copied().filter(|x| *x != "to").collect();
+    if opens && (2..=4).contains(&rest.len()) && rest.last().is_some_and(|e| ENDINGS.contains(e)) {
+        return Some(vec![step("open_link", json!({"url": rest.join(".")}))]);
+    }
+    // The desktop.
+    if ["show desktop", "show the desktop", "show my desktop", "clear the screen", "show me the desktop"].contains(&c) {
+        return Some(vec![step("show_desktop", json!({}))]);
+    }
+    // "minimize all applications", "hide everything", "close all apps": every window (closing
+    // still asks first).
+    let every = has(w, &["all", "everything", "every"]) && w.len() <= 4;
+    if every && ["minimize", "minimise", "hide"].contains(w.first()?) {
+        return Some(vec![step("minimize_window", json!({"window": "all windows"}))]);
+    }
+    if every && ["close", "quit", "exit", "kill"].contains(w.first()?) {
+        return Some(vec![step("close_window", json!({"window": "all windows"}))]);
+    }
+    // "firefox to desktop 2" (no verb).
+    if let Some(i) = c.find(" to desktop ").or(c.find(" to workspace ")) {
+        // Verbs have their own rules ("go to desktop 2" switches, "send x to desktop 2" below).
+        let verbless = !["go", "switch", "take", "move", "send", "put", "throw", "bring", "get"].contains(w.first()?);
+        let name = c[..i].trim_start_matches("the ").trim();
+        let n = c[i..].split_whitespace().nth(2).and_then(number).filter(|n| (1..=9).contains(n));
+        if let (true, Some(n)) = (verbless && !name.is_empty() && name.split_whitespace().count() <= 3, n) {
+            return Some(vec![step("move_to_desktop", json!({"window": name, "number": n}))]);
+        }
+    }
+    // "send firefox to desktop 2", "move this window to desktop three".
+    if ["send", "move", "put", "throw"].contains(w.first()?) {
+        if let Some(i) = w.iter().position(|x| ["desktop", "workspace", "space"].contains(x)) {
+            if let Some(n) = w.get(i + 1).and_then(|x| number(x)).filter(|n| (1..=9).contains(n)) {
+                let name: Vec<&str> = w[1..i].iter().copied().filter(|x| !["the", "this", "my", "window", "app", "to", "onto", "on"].contains(x)).collect();
+                let window = if name.is_empty() { "it".to_string() } else { name.join(" ") };
+                return Some(vec![step("move_to_desktop", json!({"window": window, "number": n}))]);
+            }
+        }
+    }
+    // The dock.
+    if has(w, &["dock"]) {
+        let mut args = serde_json::Map::new();
+        if has(w, &["left"]) {
+            args.insert("position".into(), json!("left"));
+        } else if has(w, &["right"]) {
+            args.insert("position".into(), json!("right"));
+        } else if has(w, &["bottom", "down"]) {
+            args.insert("position".into(), json!("bottom"));
+        }
+        if c.contains("always show") || c.contains("dont hide") || c.contains("stop hiding") || c.contains("never hide") || c.contains("keep the dock") {
+            args.insert("hide".into(), json!("never"));
+        } else if has(w, &["hide", "hidden", "autohide"]) {
+            args.insert("hide".into(), json!("always"));
+        }
+        if has(w, &["bigger", "larger", "big", "large"]) {
+            args.insert("size".into(), json!("large"));
+        } else if has(w, &["smaller", "small", "tiny"]) {
+            args.insert("size".into(), json!("small"));
+        }
+        if !args.is_empty() {
+            return Some(vec![step("dock", Value::Object(args))]);
+        }
+    }
+    // kompact's switches: "turn off animations", "focus follows mouse on".
+    let setting = if has(w, &["animations", "animation"]) {
+        Some("animations")
+    } else if c.contains("focus follows") {
+        Some("focus-follows-mouse")
+    } else if c.contains("tap to click") {
+        Some("tap-to-click")
+    } else if c.contains("left handed") || c.contains("lefthanded") {
+        Some("left-handed")
+    } else {
+        None
+    };
+    if let (Some(name), Some(on)) = (setting, switch(w)) {
+        return Some(vec![step("desktop_setting", json!({"setting": name, "on": on}))]);
+    }
+    None
+}
+
+fn first_is(w: &[&str], word: &str) -> bool {
+    w.first() == Some(&word)
+}
+
+/// A Settings pane's own name after "open" / "show" ("open about", "open sound", "open date and
+/// time"), or a question that only About answers ("what version is this").
+fn pane_named(c: &str) -> Option<&'static str> {
+    if ["about this computer", "about this pc", "system information", "system info", "show system information", "what version is this", "which version is this", "about kompact", "about the computer"].contains(&c) {
+        return Some("about");
+    }
+    let rest = ["open the ", "show the ", "open my ", "show me the ", "show me ", "open ", "show ", "go to ", "change the ", "change my ", "change "].iter().find_map(|p| c.strip_prefix(p))?;
+    // ("notifications" alone shows them: the Notification Center, not its settings.)
+    const NAMES: [(&str, &str); 25] = [
+        ("about", "about"), ("sound", "sound"), ("audio", "sound"), ("wallpaper", "wallpaper"), ("background", "wallpaper"), ("desktop background", "wallpaper"),
+        ("display", "displays"), ("displays", "displays"), ("monitors", "displays"), ("appearance", "appearance"), ("theme", "appearance"), ("users", "users"),
+        ("accounts", "users"), ("date and time", "datetime"), ("datetime", "datetime"), ("keyboard shortcuts", "keys"),
+        ("shortcuts", "keys"), ("keyboard", "input"), ("mouse", "input"), ("touchpad", "input"), ("lock screen", "lock"), ("default apps", "defaults"),
+        ("screen sharing", "sharing"), ("wifi", "network"), ("wi fi", "network"),
+    ];
+    NAMES.iter().find(|(n, _)| *n == rest).map(|(_, p)| *p)
+}
+
+/// Which Settings pane the words name.
+fn pane_for(c: &str) -> Option<&'static str> {
+    const PANES: [(&[&str], &str); 19] = [
+        (&["wifi", "wi fi", "network", "internet", "ethernet"], "network"),
+        (&["bluetooth"], "bluetooth"),
+        (&["notification"], "notifications"),
+        (&["sound", "audio", "volume", "speaker", "microphone"], "sound"),
+        (&["about", "system info", "version"], "about"),
+        (&["appearance", "theme", "dark mode", "light mode", "accent"], "appearance"),
+        (&["control center", "menu bar"], "control"),
+        (&["assistant", "siva", "voice"], "assistant"),
+        (&["date", "time", "clock", "time zone"], "datetime"),
+        (&["default app", "default browser"], "defaults"),
+        (&["dock", "desktop"], "dock"),
+        (&["display", "monitor", "screen resolution"], "displays"),
+        (&["wallpaper", "background"], "wallpaper"),
+        (&["screenshot"], "screenshots"),
+        (&["sharing", "screen share"], "sharing"),
+        (&["lock screen", "lock", "energy", "sleep"], "lock"),
+        (&["user", "account", "login", "password"], "users"),
+        (&["mouse", "keyboard layout", "touchpad", "trackpad", "keyboard"], "input"),
+        (&["shortcut", "hotkey", "keys"], "keys"),
+    ];
+    // "keyboard shortcuts" is shortcuts, not the keyboard.
+    if c.contains("shortcut") {
+        return Some("keys");
+    }
+    PANES.iter().find(|(words, _)| words.iter().any(|x| c.contains(x))).map(|(_, p)| *p)
+}
+
+/// Which folder ("open my downloads", "show the documents folder", "open the trash").
+fn folder_for(w: &[&str]) -> Option<&'static str> {
+    const FOLDERS: [(&str, &str); 10] = [
+        ("downloads", "downloads"),
+        ("download", "downloads"),
+        ("documents", "documents"),
+        ("pictures", "pictures"),
+        ("photos", "pictures"),
+        ("music", "music"),
+        ("videos", "videos"),
+        ("screenshots", "screenshots"),
+        ("trash", "trash"),
+        ("bin", "trash"),
+    ];
+    let rest: Vec<&str> = w[1..].iter().copied().filter(|x| !["the", "my", "me", "folder", "directory", "files", "in", "up"].contains(x)).collect();
+    match rest.as_slice() {
+        ["home"] => Some("home"),
+        ["desktop", "folder"] | ["desktop"] if w.contains(&"folder") => Some("desktop"),
+        [one] => FOLDERS.iter().find(|(k, _)| k == one).map(|(_, f)| *f),
+        _ => None,
+    }
+}
+
+/// "search youtube for lofi music", "search for cats on youtube", "youtube search cats",
+/// "google how tall is everest", "look up rust traits", "find pizza near me on maps".
+fn search(c: &str) -> Option<Step> {
+    const SITES: [(&str, &str); 8] = [("youtube", "youtube"), ("wikipedia", "wikipedia"), ("google maps", "maps"), ("maps", "maps"), ("images", "images"), ("news", "news"), ("github", "github"), ("google", "web")];
+    let (mut q, mut site) = if let Some(r) = c.strip_prefix("search for ").or(c.strip_prefix("search ")).or(c.strip_prefix("look up ")).or(c.strip_prefix("find ")) {
+        (r.to_string(), "web")
+    } else if let Some(r) = c.strip_prefix("google ") {
+        (r.to_string(), "web")
+    } else {
+        // "youtube search cats", "play lofi on youtube" isn't one (media).
+        let (name, site) = SITES.iter().find(|(name, _)| c.starts_with(&format!("{name} search ")))?;
+        (c[name.len() + " search ".len()..].to_string(), *site)
+    };
+    for (name, s) in SITES {
+        // "youtube for cats" / "cats on youtube" / "on youtube for cats"
+        if let Some(r) = q.strip_prefix(&format!("{name} for ")).or(q.strip_prefix(&format!("on {name} for "))) {
+            (q, site) = (r.to_string(), s);
+            break;
+        }
+        if let Some(r) = q.strip_suffix(&format!(" on {name}")).or(q.strip_suffix(&format!(" in {name}"))) {
+            (q, site) = (r.to_string(), s);
+            break;
+        }
+    }
+    let q = q.trim().trim_start_matches("for ").trim();
+    if q.is_empty() {
+        return None;
+    }
+    Some(step("search_web", if site == "web" { json!({"query": q}) } else { json!({"query": q, "site": site}) }))
+}
+
 /// One request, already split from the others.
 fn clause(c: &str) -> Option<Vec<Step>> {
     let w: Vec<&str> = c.split_whitespace().collect();
     let first = *w.first()?;
+    // 20b: the rest of the desktop, before the rules below take its words ("open bluetooth
+    // settings" isn't Bluetooth on, "move the dock to the left" isn't a window).
+    if let Some(s) = desktop_clause(c, &w) {
+        return Some(s);
+    }
 
     // "firefox and terminal side by side" (kept whole by `split`)
     if let Some(i) = c.find(" side by side") {
@@ -294,6 +550,13 @@ fn clause(c: &str) -> Option<Vec<Step>> {
     if c.starts_with("switch to ") || c.starts_with("go to ") || c.starts_with("bring up ") || c.starts_with("show me ") {
         return name_after(&w, 2).map(|n| vec![step("focus_window", json!({"window": n}))]);
     }
+    // 20b: "firefox to the front" (no verb).
+    if let Some(name) = c.strip_suffix(" to the front").or(c.strip_suffix(" to front")) {
+        if !name.contains(' ') || name.starts_with("the ") {
+            let n = name_after(&name.split_whitespace().collect::<Vec<_>>(), 0)?;
+            return Some(vec![step("focus_window", json!({"window": n}))]);
+        }
+    }
     // 20a: "bring terminal to the front", "bring firefox forward".
     for tail in [" to the front", " to front", " forward", " in front"] {
         if let Some(name) = c.strip_prefix("bring ").and_then(|r| r.strip_suffix(tail)) {
@@ -363,7 +626,7 @@ pub fn describe(s: &Step) -> String {
     let text = |k: &str| s.args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let on = s.args.get("on").and_then(Value::as_bool).unwrap_or(true);
     let int = |k: &str| s.args.get(k).and_then(Value::as_i64).unwrap_or(0);
-    let title = |t: String| {
+    let title = |t: String| -> String {
         let mut c = t.chars();
         c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
     };
@@ -375,6 +638,24 @@ pub fn describe(s: &Step) -> String {
         "bluetooth_status" => "Check Bluetooth".into(),
         "now_playing" => "See what's playing".into(),
         "system_status" => "Check how busy the computer is".into(),
+        "show_part" => match text("part").as_str() {
+            "menu" => "Open the menu".into(),
+            "control-center" => "Open Control Center".into(),
+            "notifications" => "Show the notifications".into(),
+            "overview" => "Show all desktops".into(),
+            "switcher" => "Open the window switcher".into(),
+            p => format!("Open {}", title(p.to_string())),
+        },
+        "open_settings" if text("pane").is_empty() => "Open Settings".into(),
+        "open_settings" => format!("Open {} settings", title(text("pane"))),
+        "open_folder" => format!("Open {}", title(text("folder"))),
+        "open_link" => format!("Open {}", text("url")),
+        "search_web" if text("site").is_empty() => format!("Search the web for {}", text("query")),
+        "search_web" => format!("Search {} for {}", title(text("site")), text("query")),
+        "move_to_desktop" => format!("Move {} to desktop {}", title(text("window")), int("number")),
+        "show_desktop" => "Show the desktop".into(),
+        "dock" => "Change the dock".into(),
+        "desktop_setting" => switch(&title(text("setting").replace('-', " "))),
         "date_time" => "Check the time".into(),
         "disk_space" => "Check the disk space".into(),
         "sound_check" => "Check the sound quality".into(),
@@ -493,7 +774,8 @@ pub fn parse(text: &str) -> Parsed {
     let glued = [", which", ", that is", ", the one"].iter().fold(lower, |t, c| t.replace(c, &c[1..]));
     // Commas and semicolons separate requests too: mark them before punctuation goes.
     let marked = glued.replace([',', ';'], " and ");
-    let c = normalize(&marked);
+    // "date and time" is one thing (the pane), not two requests.
+    let c = normalize(&marked).replace("date and time", "datetime");
     if c.is_empty() {
         return Parsed::Unknown(String::new());
     }
@@ -531,7 +813,7 @@ pub fn clauses(text: &str) -> Option<Vec<Result<Vec<Step>, String>>> {
     }
     let lower = text.to_lowercase();
     let glued = [", which", ", that is", ", the one"].iter().fold(lower, |t, c| t.replace(c, &c[1..]));
-    let c = normalize(&glued.replace([',', ';'], " and "));
+    let c = normalize(&glued.replace([',', ';'], " and ")).replace("date and time", "datetime");
     let parts: Vec<Result<Vec<Step>, String>> = split(&c).into_iter().map(|p| clause(&p).ok_or(p)).collect();
     (!parts.is_empty()).then_some(parts)
 }
@@ -754,6 +1036,97 @@ mod tests {
         assert!(parts[0].is_ok());
         assert_eq!(parts[1].as_ref().unwrap_err(), "make it sparkle");
         assert!(clauses("hello").is_none());
+    }
+
+    /// Where many ways of saying 20b's requests land: `cargo test phrasebook -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn phrasebook() {
+        for t in [
+            "open about", "about this computer", "show system information", "open about settings", "what version is this",
+            "minimize all applications", "minimize all apps", "minimize everything", "minimize all windows", "hide all apps", "close all applications", "close all windows",
+            "show all apps", "show all applications", "open launchpad", "show me my apps", "open the app grid",
+            "open sound settings", "sound settings", "open the bluetooth setting", "with the bluetooth setting", "bluetooth settings please", "take me to wifi settings", "change the wallpaper", "open wallpaper settings", "open display settings", "open the dock settings", "open keyboard settings", "open the network settings", "open notification settings",
+            "open sound", "open wallpaper", "open displays", "open appearance", "open users", "open date and time",
+            "give me the compact menu", "show the kompact menu", "open the logo menu", "open menu",
+            "open control center", "show quick settings", "open notification center", "show my notifications", "show all desktops", "open mission control", "show the window switcher",
+            "open spotlight", "search apps",
+            "open downloads", "open my documents folder", "show me my pictures", "open home folder", "open the trash", "empty the trash",
+            "search youtube for tamil music", "search for tamil songs on youtube", "play tamil songs on youtube", "youtube tamil songs", "look up rust traits", "google weather in chennai", "find pizza places on maps", "search wikipedia for chennai",
+            "go to github.com", "open youtube", "open youtube.com", "open gmail",
+            "show the desktop", "show desktop", "clear the screen", "minimize everything",
+            "send firefox to desktop 2", "move firefox to desktop two", "move this window to desktop 3", "firefox to desktop 2", "put terminal on desktop 2",
+            "move the dock to the left", "put the dock on the right", "dock to the bottom", "hide the dock", "always show the dock", "make the dock bigger", "make the dock smaller",
+            "turn off animations", "disable animations", "turn on focus follows mouse", "enable tap to click",
+            "keep firefox on the left", "firefox to the front", "bring firefox to the front",
+        ] {
+            println!("{t:45} → {:?}", match parse(t) {
+                Parsed::Steps(s) => s.iter().map(|s| format!("{} {}", s.tool, s.args)).collect::<Vec<_>>().join("; "),
+                other => format!("{other:?}"),
+            });
+        }
+    }
+
+    #[test]
+    fn misroutes_from_the_log() {
+        // 2026-10-25: "Open about" looked for an app; "Minimize all applications" opened Launchpad;
+        // "With the Bluetooth setting" turned Bluetooth on.
+        assert_eq!(one("Open about"), ("open_settings".into(), json!({"pane": "about"})));
+        assert_eq!(one("about this computer"), ("open_settings".into(), json!({"pane": "about"})));
+        assert_eq!(one("what version is this"), ("open_settings".into(), json!({"pane": "about"})));
+        assert_eq!(one("Minimize all applications"), ("minimize_window".into(), json!({"window": "all windows"})));
+        assert_eq!(one("minimize everything"), ("minimize_window".into(), json!({"window": "all windows"})));
+        assert_eq!(one("hide all apps"), ("minimize_window".into(), json!({"window": "all windows"})));
+        assert_eq!(one("close all applications"), ("close_window".into(), json!({"window": "all windows"})));
+        assert_eq!(one("With the Bluetooth setting"), ("open_settings".into(), json!({"pane": "bluetooth"})));
+        assert_eq!(one("open the bluetooth setting"), ("open_settings".into(), json!({"pane": "bluetooth"})));
+        assert_eq!(one("change the wallpaper"), ("open_settings".into(), json!({"pane": "wallpaper"})));
+        assert_eq!(one("open sound"), ("open_settings".into(), json!({"pane": "sound"})));
+        assert_eq!(one("open date and time"), ("open_settings".into(), json!({"pane": "datetime"})));
+        assert_eq!(one("open displays"), ("open_settings".into(), json!({"pane": "displays"})));
+        assert_eq!(one("Give me the compact menu"), ("show_part".into(), json!({"part": "menu"})));
+        assert_eq!(one("show quick settings"), ("show_part".into(), json!({"part": "control-center"})));
+        assert_eq!(one("search apps"), ("show_part".into(), json!({"part": "spotlight"})));
+        assert_eq!(one("show me my apps"), ("show_part".into(), json!({"part": "launchpad"})));
+        assert_eq!(one("show all applications"), ("show_part".into(), json!({"part": "launchpad"})));
+        assert_eq!(one("show me my pictures"), ("open_folder".into(), json!({"folder": "pictures"})));
+        assert_eq!(one("play tamil songs on youtube"), ("search_web".into(), json!({"query": "tamil songs", "site": "youtube"})));
+        assert_eq!(one("youtube tamil songs"), ("search_web".into(), json!({"query": "tamil songs", "site": "youtube"})));
+        assert_eq!(one("firefox to desktop 2"), ("move_to_desktop".into(), json!({"window": "firefox", "number": 2})));
+        assert_eq!(one("go to desktop 2"), ("switch_desktop".into(), json!({"number": 2})), "still switching");
+        assert_eq!(one("keep firefox on the left"), ("place_window".into(), json!({"window": "firefox", "where": "left"})));
+        assert_eq!(one("firefox to the front"), ("focus_window".into(), json!({"window": "firefox"})));
+        assert_eq!(one("play"), ("media".into(), json!({"action": "play-pause"})), "plain play is still the media");
+        assert_eq!(one("open files"), ("open_app".into(), json!({"app": "files"})), "an app is still an app");
+    }
+
+    #[test]
+    fn the_whole_desktop() {
+        assert_eq!(one("open bluetooth settings"), ("open_settings".into(), json!({"pane": "bluetooth"})));
+        assert_eq!(one("open the keyboard shortcuts settings"), ("open_settings".into(), json!({"pane": "keys"})));
+        assert_eq!(one("open settings"), ("open_settings".into(), json!({})));
+        assert_eq!(one("Show me the compact menu"), ("show_part".into(), json!({"part": "menu"})), "from the 2026-10-25 log");
+        assert_eq!(one("open control center"), ("show_part".into(), json!({"part": "control-center"})));
+        assert_eq!(one("show notifications"), ("show_part".into(), json!({"part": "notifications"})));
+        assert_eq!(one("show all desktops"), ("show_part".into(), json!({"part": "overview"})));
+        assert_eq!(one("open my downloads"), ("open_folder".into(), json!({"folder": "downloads"})));
+        assert_eq!(one("open the trash"), ("open_folder".into(), json!({"folder": "trash"})));
+        assert_eq!(one("search youtube for lofi music"), ("search_web".into(), json!({"query": "lofi music", "site": "youtube"})));
+        assert_eq!(one("search for cats on youtube"), ("search_web".into(), json!({"query": "cats", "site": "youtube"})));
+        assert_eq!(one("search claude in youtube"), ("search_web".into(), json!({"query": "claude", "site": "youtube"})), "from the 2026-10-22 log");
+        assert_eq!(one("google how tall is everest"), ("search_web".into(), json!({"query": "how tall is everest"})));
+        assert_eq!(one("go to github.com"), ("open_link".into(), json!({"url": "github.com"})));
+        assert_eq!(one("show the desktop"), ("show_desktop".into(), json!({})));
+        assert_eq!(one("send firefox to desktop 2"), ("move_to_desktop".into(), json!({"window": "firefox", "number": 2})));
+        assert_eq!(one("move this window to desktop three"), ("move_to_desktop".into(), json!({"window": "it", "number": 3})));
+        assert_eq!(one("move the dock to the left"), ("dock".into(), json!({"position": "left"})));
+        assert_eq!(one("hide the dock"), ("dock".into(), json!({"hide": "always"})));
+        assert_eq!(one("make the dock bigger"), ("dock".into(), json!({"size": "large"})));
+        assert_eq!(one("turn off animations"), ("desktop_setting".into(), json!({"setting": "animations", "on": false})));
+        // Still themselves.
+        assert_eq!(one("open firefox"), ("open_app".into(), json!({"app": "firefox"})));
+        assert_eq!(one("put firefox on the left"), ("place_window".into(), json!({"window": "firefox", "where": "left"})));
+        assert_eq!(one("turn off bluetooth"), ("bluetooth".into(), json!({"on": false})));
     }
 
     #[test]

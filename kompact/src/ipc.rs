@@ -31,7 +31,7 @@
 //! "sticky":false,"windows":[3,5,1],"selected":1}` (window ids in the order shown) when it
 //! appears and whenever the list or selection changes, and `{"type":"switcher","open":false}` when
 //! it ends. 19c: `place <id> left|right|fill|restore` (Siva puts a window somewhere, as the snap
-//! keys would). The shell asks `switcher open` (the dock's button), `switcher select <id>` (the pointer
+//! keys would); 20b: `send <id> <1-9>` (to another desktop) and `show-desktop`. The shell asks `switcher open` (the dock's button), `switcher select <id>` (the pointer
 //! is on a card), `switcher pick <id>` (clicked) and `switcher cancel`.
 //!
 //! Encoding and parsing are pure and tested here; the socket work is non-blocking and runs from
@@ -117,6 +117,11 @@ pub enum Request {
     /// 19c: `place <id> left|right|fill|restore`: the shell's assistant (Siva) puts a window
     /// on a half of the screen, fills it, or restores it, as the snap keys would.
     Place { id: u64, to: PlaceTo },
+    /// 20b: `send <id> <1-9>`: the assistant sends a window to another desktop (as
+    /// Super+Shift+N does for the focused one), staying here.
+    Send { id: u64, workspace: usize },
+    /// 20b: `show-desktop`: every window out of the way, or back (as the Show Desktop key).
+    ShowDesktop,
 }
 
 /// 19c: where `place` puts a window.
@@ -380,6 +385,13 @@ pub fn parse_request(line: &str) -> Option<Request> {
             };
             return Some(Request::Place { id, to });
         }
+        "send" => {
+            let rest: Vec<&str> = words.by_ref().collect();
+            let [id, n] = rest[..] else { return None };
+            let n: usize = n.parse().ok().filter(|n| (1..=crate::workspace::COUNT).contains(n))?;
+            return Some(Request::Send { id: id.parse().ok()?, workspace: n });
+        }
+        "show-desktop" => Request::ShowDesktop,
         "switcher" => {
             let rest: Vec<&str> = words.by_ref().collect();
             let req = match rest[..] {
@@ -409,7 +421,7 @@ pub fn parse_request(line: &str) -> Option<Request> {
     };
     // Exactly the words the command takes.
     let expected = match req {
-        Request::Logout | Request::Layout | Request::Lock | Request::Token | Request::Displays => 1,
+        Request::Logout | Request::Layout | Request::Lock | Request::Token | Request::Displays | Request::ShowDesktop => 1,
         Request::Shot { .. } | Request::DockBar { .. } => 5,
         _ => 2,
     };
@@ -762,6 +774,12 @@ mod tests {
         assert_eq!(parse_request("minimize 1"), Some(Request::Minimize(1)));
         // 19c
         assert_eq!(parse_request("place 4 left"), Some(Request::Place { id: 4, to: PlaceTo::Left }));
+        // 20b
+        assert_eq!(parse_request("send 4 2"), Some(Request::Send { id: 4, workspace: 2 }));
+        assert_eq!(parse_request("send 4 0"), None);
+        assert_eq!(parse_request("send 4 10"), None);
+        assert_eq!(parse_request("send four 2"), None);
+        assert_eq!(parse_request("show-desktop"), Some(Request::ShowDesktop));
         assert_eq!(parse_request("place 4 restore"), Some(Request::Place { id: 4, to: PlaceTo::Restore }));
         assert_eq!(parse_request("place 4 sideways"), None);
         assert_eq!(parse_request("place left"), None);

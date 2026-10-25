@@ -239,6 +239,16 @@ fn tool_words(tool: &str) -> &'static [&'static str] {
         "system_status" => &["slow", "lag", "cpu", "memory", "ram", "busy", "computer", "fan", "hot", "freez", "stuck"],
         "disk_space" => &["disk", "space", "storage", "full", "drive"],
         "date_time" => &["time", "date", "day", "clock", "today"],
+        // 20b
+        "show_part" => &["menu", "spotlight", "launchpad", "control", "notification", "overview", "desktops", "switcher", "apps"],
+        "open_settings" => &["setting", "preference", "configure"],
+        "open_folder" => &["folder", "download", "document", "picture", "photo", "music", "video", "trash", "home"],
+        "open_link" => &["website", "site", "page", "link", "com", "org", "go"],
+        "search_web" => &["search", "google", "look", "find", "youtube", "wikipedia"],
+        "move_to_desktop" => &["desktop", "workspace", "send", "move"],
+        "show_desktop" => &["desktop", "everything", "clear", "hide"],
+        "dock" => &["dock"],
+        "desktop_setting" => &["animation", "focus", "tap", "handed"],
         "sound_check" => &["sound", "audio", "cut", "choppy", "crackl", "quality", "bad", "stutter", "phone"],
         _ => &[],
     }

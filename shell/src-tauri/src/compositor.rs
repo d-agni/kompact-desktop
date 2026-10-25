@@ -65,7 +65,7 @@ pub fn request_line(action: &str, id: Option<u64>) -> Option<String> {
         ("activate" | "close" | "minimize" | "thumb", Some(id)) => Some(format!("{action} {id}\n")),
         // 6e: the panel's workspace indicator; `id` is the workspace (1-based).
         ("workspace", Some(n)) => Some(format!("workspace {n}\n")),
-        ("logout" | "layout" | "lock" | "token", None) => Some(format!("{action}\n")),
+        ("logout" | "layout" | "lock" | "token" | "show-desktop", None) => Some(format!("{action}\n")),
         // 16b/16c: the window switcher (the dock's button, the overlay's cards).
         ("switcher-open", None) => Some("switcher open\n".into()),
         ("switcher-cancel", None) => Some("switcher cancel\n".into()),
@@ -387,6 +387,11 @@ fn serve(app: &AppHandle, stream: UnixStream) {
 }
 
 impl Compositor {
+    /// 20b: the last `settings` message (kompact's own settings).
+    pub fn last_settings(&self) -> Option<Value> {
+        self.settings.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// 19k: the last `layout` message, if it came after `since`.
     pub fn layout_since(&self, since: std::time::Instant) -> Option<Value> {
         self.layout.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|(t, _)| *t >= since).map(|(_, v)| v.clone())

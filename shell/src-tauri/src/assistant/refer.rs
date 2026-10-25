@@ -77,7 +77,9 @@ pub fn parse(query: &str) -> WinRef {
             "old" | "oldest" | "first" | "earliest" => r.pick = Pick::Oldest,
             "big" | "bigger" | "biggest" | "large" | "larger" | "largest" => r.pick = Pick::Biggest,
             "small" | "smaller" | "smallest" | "little" => r.pick = Pick::Smallest,
-            "all" | "every" | "each" | "both" => r.all = true,
+            "all" | "every" | "each" | "both" | "everything" => r.all = true,
+            // 20b: "all applications" is all windows.
+            "apps" | "applications" | "programs" if r.all => {}
             w if FILLER.contains(&w) => {}
             w => name.push(w),
         }

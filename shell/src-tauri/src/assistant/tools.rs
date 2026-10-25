@@ -59,6 +59,17 @@ const fn opt(name: &'static str, arg: Arg, about: &'static str) -> Param {
 }
 
 const WINDOW: Arg = Arg::Text { max: 120 };
+/// 20b: what `show_part` opens.
+pub const PARTS: &[&str] = &["menu", "spotlight", "launchpad", "control-center", "notifications", "overview", "switcher"];
+/// 20b: Settings' panes (`web/settings.html`'s `data-pane`).
+pub const PANES: &[&str] = &[
+    "network", "bluetooth", "notifications", "sound", "about", "appearance", "control", "assistant", "datetime", "defaults", "dock", "displays", "wallpaper",
+    "screenshots", "sharing", "lock", "users", "input", "keys",
+];
+pub const FOLDERS: &[&str] = &["home", "downloads", "documents", "pictures", "music", "videos", "desktop", "screenshots", "trash"];
+pub const SITES: &[&str] = &["web", "youtube", "wikipedia", "maps", "images", "news", "github"];
+/// kompact's on/off settings (`prefs.rs`).
+pub const DESKTOP_SETTINGS: &[&str] = &["animations", "focus-follows-mouse", "tap-to-click", "left-handed"];
 const ON: Arg = Arg::Bool;
 
 pub const TOOLS: &[Tool] = &[
@@ -95,6 +106,16 @@ pub const TOOLS: &[Tool] = &[
     Tool { name: "keep_awake", about: "Keep the screen awake (no lock, no screens off) until turned off.", tier: Tier::Reversible, undo: true, params: &[p("on", ON, "")] },
     Tool { name: "screenshot", about: "Take a screenshot of the screen, or let the user drag out an area.", tier: Tier::Reversible, undo: false, params: &[p("of", Arg::OneOf(&["screen", "area"]), "")] },
     Tool { name: "lock_screen", about: "Lock the screen.", tier: Tier::Reversible, undo: false, params: &[] },
+    // 20b: the rest of the desktop.
+    Tool { name: "show_part", about: "Open a part of the desktop: the logo menu, Spotlight, Launchpad, Control Center, the notifications, all desktops, the window switcher.", tier: Tier::Reversible, undo: false, params: &[p("part", Arg::OneOf(PARTS), "")] },
+    Tool { name: "open_settings", about: "Open System Settings, at a pane.", tier: Tier::Reversible, undo: false, params: &[opt("pane", Arg::OneOf(PANES), "the start page if left out")] },
+    Tool { name: "open_folder", about: "Open a folder in Files.", tier: Tier::Reversible, undo: false, params: &[p("folder", Arg::OneOf(FOLDERS), "")] },
+    Tool { name: "open_link", about: "Open a web address in the browser.", tier: Tier::Reversible, undo: false, params: &[p("url", Arg::Text { max: 300 }, "e.g. youtube.com")] },
+    Tool { name: "search_web", about: "Search for something in the browser, on the web or a site.", tier: Tier::Reversible, undo: false, params: &[p("query", Arg::Text { max: 200 }, ""), opt("site", Arg::OneOf(SITES), "the web if left out")] },
+    Tool { name: "move_to_desktop", about: "Move a window to another desktop (1 to 9), staying here.", tier: Tier::Reversible, undo: true, params: &[p("window", WINDOW, "its title or app"), p("number", Arg::Int { min: 1, max: 9 }, "")] },
+    Tool { name: "show_desktop", about: "Move every window out of the way to show the desktop, or bring them back.", tier: Tier::Reversible, undo: true, params: &[] },
+    Tool { name: "dock", about: "Change the dock: where it is, when it hides, how big it is.", tier: Tier::Reversible, undo: true, params: &[opt("position", Arg::OneOf(&["left", "bottom", "right"]), ""), opt("hide", Arg::OneOf(&["never", "smart", "always"]), "smart: when a window is maximized"), opt("size", Arg::OneOf(&["small", "medium", "large"]), "")] },
+    Tool { name: "desktop_setting", about: "Turn a desktop setting on or off.", tier: Tier::Reversible, undo: true, params: &[p("setting", Arg::OneOf(DESKTOP_SETTINGS), ""), p("on", ON, "")] },
     // ---- Tier 2: consequential, asks every time ----
     Tool { name: "close_window", about: "Close a window. Its app may lose unsaved work.", tier: Tier::Consequential, undo: false, params: &[p("window", WINDOW, "its title or app")] },
     Tool { name: "wifi", about: "Turn Wi-Fi on or off.", tier: Tier::Reversible, undo: true, params: &[p("on", ON, "")] },
