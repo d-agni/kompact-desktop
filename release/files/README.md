@@ -47,9 +47,14 @@ classic presets).
 ## Siva, the assistant
 
 The ring in the menu bar (or Ctrl+Super+V): click it and speak, or type. "Volume 30", "dark
-mode", "put Firefox and Files side by side", "set up for coding", "why is my computer slow?".
-Everything runs on this PC; nothing Siva hears or reads leaves it. What can't be undone (closing
-windows, Wi-Fi, logging out, power) asks first, and only a click says yes.
+mode", "put Firefox and Files side by side", "set up for coding", "why is my computer slow?",
+"what's the weather?", "open Text Editor, write a short poem and save it as poem.txt".
+Hearing, speaking and the small AI model run on this PC; what Siva hears is never kept. It goes
+online only for look-ups (weather, news, facts, searches, from free sources) as Settings →
+Assistant → Internet allows (Always, Ask or Off), and to a cloud AI only if you turn one on with
+your own key. What can't be undone (closing windows, Wi-Fi, logging out, power, typing into a
+terminal) asks first, and only a click says yes. Settings → Assistant → Hearing picks Accurate or
+Fast speech recognition.
 
 Typing works right away. For speech, set it up once, as yourself:
 
