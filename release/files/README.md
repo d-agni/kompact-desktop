@@ -56,10 +56,22 @@ your own key. What can't be undone (closing windows, Wi-Fi, logging out, power, 
 terminal) asks first, and only a click says yes. Settings → Assistant → Hearing picks Accurate or
 Fast speech recognition.
 
+Siva also does real tasks: "write a python program that prints the primes below 50, save it and
+run it", "list the files in my Documents folder", "open Google News and read the headlines",
+"read this page aloud". Files are written in your home folder (with Undo), and commands run in
+Siva's own terminal window, where you see them; deleting, sudo, sending files out and the like
+ask first. A task works step by step, seeing each result, on the cloud AI when one is on (a
+free Groq key works well), else on a coding model on this PC (`kompact-assistant-setup work`,
+2.1 GB, slow on older CPUs; Qwen2.5-Coder 3B is under the Qwen Research License: non-commercial
+use only). Siva reads inside windows through accessibility (Settings → Assistant → Permissions →
+Read inside apps; restart Firefox once after turning it on); password fields are never read, and
+what's in your windows is read on this PC and never sent to the cloud AI.
+
 Typing works right away. For speech, set it up once, as yourself:
 
 ```sh
 kompact-assistant-setup            # hearing, voice and understanding (~1.4 GB, once)
+kompact-assistant-setup work       # optional: the coding model for tasks without a cloud AI
 kompact-assistant-setup --check    # what's set up
 kompact-assistant-setup --remove   # delete the downloaded models again
 ```
