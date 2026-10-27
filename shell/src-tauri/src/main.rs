@@ -230,6 +230,8 @@ fn main() {
             assistant::run::assistant_listen,
             assistant::run::assistant_stop,
             assistant::model::model_state,
+            assistant::inside::read_apps_state,
+            assistant::inside::set_read_apps,
             assistant::learn::voice_learnt,
             assistant::learn::voice_learnt_change,
             assistant::learn::voice_learn,
@@ -334,6 +336,8 @@ fn main() {
             build_hud(app.handle(), gpu, snapshot_dir.clone())?;
             // 19f: the local model's prompt cache, made quietly after start.
             assistant::model::warm_up();
+            // 21d: apps share their contents while Read inside apps is on.
+            assistant::inside::apply_at_start();
             if notify::enabled_from_env(std::env::var("KOMPACT_SHELL_NOTIFICATIONS").ok().as_deref()) {
                 build_notify(app.handle(), gpu, snapshot_dir.clone())?;
                 notify::start(app.handle().clone());

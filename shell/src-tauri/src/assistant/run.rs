@@ -16,6 +16,7 @@ use tracing::info;
 use super::activity::{self, Kind};
 use super::policy::{self, Decision, Proposal};
 use super::rules::{self, Parsed, Step};
+use super::{agent, work};
 use crate::compositor::Compositor;
 
 // ---- matching names (pure) ----
@@ -126,6 +127,9 @@ pub struct Reply {
     pub choices: Vec<Choice>,
     /// 20d: what a look-up found, listed under the reply (headlines, results, the week's days).
     pub links: Vec<super::web::Link>,
+    /// 21e-2: you asked for it to be read out: said in full (up to `speech::READ_CHARS`).
+    #[serde(skip)]
+    pub long: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,7 +208,11 @@ static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 
 /// Whether this task was asked to stop (and the ask is used up).
 fn stop_asked() -> bool {
-    let t = current_task();
+    stop_asked_for(current_task())
+}
+
+/// `stop_asked` for task `t`, from any thread (21a: while a command runs).
+fn stop_asked_for(t: u64) -> bool {
     let mut list = STOPPED.lock().unwrap_or_else(|e| e.into_inner());
     let had = list.contains(&t);
     list.retain(|x| *x != t);
@@ -243,12 +251,13 @@ pub struct Card {
 }
 
 fn reply(text: impl Into<String>, mood: &'static str) -> Reply {
-    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None, choices: Vec::new(), links: Vec::new() }
+    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None, choices: Vec::new(), links: Vec::new(), long: false }
 }
 
 const HELP: &str = "Try: “volume 30”, “dark mode”, “open Firefox”, “put Firefox and Terminal side by side”, \
 “next song”, “do not disturb”, “go to desktop 2”, “why is my computer slow?”, “what's the weather tomorrow?”, “news about cricket”, \
-“who is A. R. Rahman?”, “search for rust traits”, “write a joke in Text Editor”, “type Dear Sam”, “new tab”, “save it”, or a routine: “set up for coding”.";
+“who is A. R. Rahman?”, “search for rust traits”, “write a joke in Text Editor”, “type Dear Sam”, “new tab”, “save it”, “run python3 hello.py”, “create a file notes.txt with buy milk”, \
+“list the files in Documents”, or a routine: “set up for coding”.";
 
 // ---- undo ----
 
@@ -274,9 +283,12 @@ enum Undo {
     Dock(crate::dock::DockPrefs),
     /// A kompact setting's old value ("animations", "on").
     Setting(String, String),
+    /// 21a: a file Siva wrote, and what was in it (None: it was new, so Undo deletes it).
+    File { path: std::path::PathBuf, before: Option<Vec<u8>> },
 }
 
 /// A request waiting on a confirmation card: its steps, how far it got, what it said so far.
+/// 21b: or a task of the work loop, with its whole conversation (`steps` empty).
 struct Waiting {
     id: u64,
     steps: Vec<Step>,
@@ -285,6 +297,7 @@ struct Waiting {
     undo: Vec<Undo>,
     /// 19d: shown again when a spoken "yes" can't answer it.
     card: Card,
+    agent: Option<Box<AgentRun>>,
 }
 
 #[derive(Default)]
@@ -359,6 +372,30 @@ struct Ctx {
     before_open: Option<Vec<u64>>,
     /// 20d: what look-ups found, for the reply's list.
     links: Vec<super::web::Link>,
+    /// 21f: this request opened a page in the browser (read next: that page, once it loads).
+    browsed: bool,
+}
+
+/// 21f: whether `w` is a web browser's window (its app's keywords say so).
+fn is_browser(w: &WinCand) -> bool {
+    let about = w.about.to_lowercase();
+    about.contains("browser") || about.contains("internet") || ["firefox", "chrom", "brave", "epiphany", "vivaldi"].iter().any(|b| w.app_id.to_lowercase().contains(b))
+}
+
+/// 21f: the browser window a page was just opened in (the one in front, else the first), waited
+/// for while the browser starts.
+async fn browser_window(app: &AppHandle) -> Result<WinCand, String> {
+    let start = std::time::Instant::now();
+    loop {
+        let list: Vec<WinCand> = windows(app).into_iter().filter(|w| is_browser(w) && !w.minimized).collect();
+        if let Some(w) = list.iter().find(|w| w.focused).or(list.first()) {
+            return Ok(w.clone());
+        }
+        if start.elapsed() > NEW_WINDOW_WAIT {
+            return Err("I can't find the browser's window.".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }
 
 /// 20d: a look-up (`web`, blocking) off the main thread.
@@ -698,6 +735,7 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             // 20b: no app called that, but a site is ("open youtube", "open gmail"): the site.
             let Some(found) = best_app(&want, &apps) else {
                 if let Some(url) = super::browser::site_for(&want) {
+                    ctx.browsed = true;
                     overlay.open_path(app, std::path::PathBuf::from(url));
                     return done(format!("Opening {want} in the browser."), None);
                 }
@@ -831,6 +869,7 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
         }
         "open_link" => {
             let url = super::browser::web_address(&str_arg("url")).ok_or("That doesn't look like a web address.")?;
+            ctx.browsed = true;
             app.state::<crate::overlay::Overlay>().open_path(app, std::path::PathBuf::from(&url));
             done(format!("Opening {url}."), None)
         }
@@ -892,6 +931,125 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             }
             done(text, None)
         }
+        // 21a: files, directly; relative names in your home folder.
+        "read_file" => {
+            let home = work::home().ok_or("I can't find your home folder.")?;
+            let path = work::resolve(&str_arg("path"), &home)?;
+            let shown = work::shown(&path, &home);
+            if path.is_dir() {
+                return Err(format!("{shown} is a folder."));
+            }
+            let mut bytes = Vec::new();
+            use std::io::Read;
+            std::fs::File::open(&path)
+                .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { format!("There's no {shown}.") } else { format!("I can't read {shown}: {e}") })?
+                .take(work::READ_MAX as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("I can't read {shown}: {e}"))?;
+            let text = String::from_utf8(bytes).map_err(|_| format!("{shown} isn't a text file."))?;
+            if text.trim().is_empty() {
+                return done(format!("{shown} is empty."), None);
+            }
+            done(format!("{shown} ({} lines):\n{}", text.lines().count(), work::head(&text, work::SHOWN)), None)
+        }
+        "list_files" => {
+            let home = work::home().ok_or("I can't find your home folder.")?;
+            let path = match a.get("folder").and_then(Value::as_str) {
+                Some(f) => work::resolve(f, &home)?,
+                None => home.clone(),
+            };
+            let shown = work::shown(&path, &home);
+            let read = std::fs::read_dir(&path).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { format!("There's no folder {shown}.") } else { format!("I can't look in {shown}: {e}") })?;
+            let mut names: Vec<String> = read
+                .flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    (!name.starts_with('.')).then(|| if e.path().is_dir() { format!("{name}/") } else { name })
+                })
+                .collect();
+            names.sort_by_key(|n| n.to_lowercase());
+            const SHOW: usize = 40;
+            let more = names.len().saturating_sub(SHOW);
+            names.truncate(SHOW);
+            if names.is_empty() {
+                return done(format!("{shown} is empty."), None);
+            }
+            let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
+            done(format!("In {shown}: {}{tail}.", names.join(", ")), None)
+        }
+        // 21d: what's inside a window, through accessibility.
+        // 21f: read out ("what"): the page's headlines or its text, picked out here on this PC.
+        "read_window" => {
+            use super::inside::Want;
+            let want = match a.get("what").and_then(Value::as_str) {
+                Some("headlines") => Want::Headlines,
+                Some("page") => Want::Page,
+                _ => Want::Outline,
+            };
+            let w = match a.get("window").and_then(Value::as_str) {
+                Some(q) => find_window(app, q, ctx).await?,
+                None if ctx.browsed => browser_window(app).await?,
+                None => windows(app).into_iter().find(|w| w.focused && !w.minimized).ok_or("There's no window in front to read.")?,
+            };
+            let max = if want == Want::Outline { super::inside::MAX_OUTLINE } else { super::speech::READ_CHARS };
+            let text = super::inside::read_as(&w.title, &w.app_id, &w.name, want, max, ctx.browsed).await?;
+            match want {
+                Want::Headlines if text.is_empty() => done(format!("I couldn't find headlines in {}.", w.name), None),
+                Want::Headlines => done(format!("The headlines:\n{text}"), None),
+                Want::Page if text.is_empty() => done(format!("{} shows nothing I can read out.", w.name), None),
+                Want::Page => done(text, None),
+                Want::Outline if text.lines().count() <= 1 => done(format!("{} shows nothing I can read.", w.name), None),
+                Want::Outline => done(format!("In {}:\n{text}", w.name), None),
+            }
+        }
+        "write_file" => {
+            let home = work::home().ok_or("I can't find your home folder.")?;
+            let path = work::resolve(&str_arg("path"), &home)?;
+            let shown = work::shown(&path, &home);
+            if path.is_dir() {
+                return Err(format!("{shown} is a folder."));
+            }
+            let before = if path.exists() { Some(std::fs::read(&path).map_err(|e| format!("I can't read {shown} to keep a copy: {e}"))?) } else { None };
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("I can't make the folder for {shown}: {e}"))?;
+            }
+            let content = str_arg("content");
+            std::fs::write(&path, &content).map_err(|e| format!("I can't write {shown}: {e}"))?;
+            info!("assistant: wrote {} ({} bytes{})", path.display(), content.len(), if before.is_some() { ", replaced" } else { "" });
+            let lines = content.lines().count();
+            let what = if before.is_some() { "Replaced" } else { "Wrote" };
+            done(format!("{what} {shown} ({lines} line{}).", if lines == 1 { "" } else { "s" }), Some(Undo::File { path, before }))
+        }
+        // 21a: in Siva's terminal, where you see it; its output comes back.
+        "run_command" => {
+            let home = work::home().ok_or("I can't find your home folder.")?;
+            // 21e: where the last command left Siva's terminal, unless a folder is named.
+            let folder = match a.get("folder").and_then(Value::as_str) {
+                Some(f) => work::resolve(f, &home)?,
+                None => work::folder_now().unwrap_or_else(|| home.clone()),
+            };
+            if !folder.is_dir() {
+                return Err(format!("There's no folder {}.", work::shown(&folder, &home)));
+            }
+            let cmd = str_arg("command");
+            let task = current_task();
+            let (c, f) = (cmd.clone(), folder.clone());
+            let r = tauri::async_runtime::spawn_blocking(move || work::run(&c, &f, || stop_asked_for(task))).await.map_err(|e| e.to_string())??;
+            let short: String = if cmd.chars().count() > 60 { format!("{}…", cmd.chars().take(60).collect::<String>()) } else { cmd.clone() };
+            let mut text = match r.exit {
+                Some(0) => format!("Ran “{short}”."),
+                Some(n) => format!("“{short}” ended with an error (exit {n})."),
+                None => return Err(format!("“{short}” is still running in Siva's terminal; I stopped waiting after {} s.", r.millis / 1000)),
+            };
+            if let Some(now) = work::folder_now().filter(|n| *n != folder) {
+                text.push_str(&format!(" Siva's terminal is now in {}.", work::shown(&now, &home)));
+            }
+            if !r.output.is_empty() {
+                text.push('\n');
+                text.push_str(&work::tail(&r.output, work::OUTPUT_KEPT));
+            }
+            done(text, None)
+        }
         // 20e-3: Save As, the name in its window, Enter.
         "save_as" => {
             let w = typing_window(app, s, ctx).await?;
@@ -929,6 +1087,7 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
         "search_web" => {
             let site = a.get("site").and_then(Value::as_str).unwrap_or("web");
             let url = super::browser::search_url(site, &str_arg("query"));
+            ctx.browsed = true;
             app.state::<crate::overlay::Overlay>().open_path(app, std::path::PathBuf::from(&url));
             done(format!("{}.", rules::describe(s)), None)
         }
@@ -1050,6 +1209,8 @@ async fn undo_one(app: &AppHandle, u: &Undo) -> Result<(), String> {
         Undo::ShowDesktop => send(app, "show-desktop", None),
         Undo::Dock(old) => crate::dock::set_dock_prefs(app.clone(), app.state::<Compositor>(), *old),
         Undo::Setting(key, value) => crate::compositor::kompact_set(app.state::<Compositor>(), key.clone(), value.clone()),
+        Undo::File { path, before: Some(old) } => std::fs::write(path, old).map_err(|e| format!("can't put {} back: {e}", path.display())),
+        Undo::File { path, before: None } => std::fs::remove_file(path).map_err(|e| format!("can't remove {}: {e}", path.display())),
         Undo::Town(old) => super::web::save_prefs(&super::web::Prefs { place: old.clone(), ..super::web::load_prefs() }),
     }
 }
@@ -1081,7 +1242,36 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, said: Vec<String>
 async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, said: Vec<String>, undo: Vec<Undo>, confirmed: bool, plan: &mut Plan<'_>) -> Reply {
     let mut ctx = Ctx::default();
     let r = run_steps_in(app, steps, at, said, undo, confirmed, plan, &mut ctx).await;
-    Reply { links: std::mem::take(&mut ctx.links), ..r }
+    // 21f: a page read out is said in full.
+    let long = r.long || steps.iter().any(|s| s.tool == "read_window" && s.args.get("what").is_some());
+    Reply { links: std::mem::take(&mut ctx.links), long, ..r }
+}
+
+/// 21a: the card for a work step that asks first (`work::command_asks`, `work::file_asks`), or
+/// None: it runs at once.
+fn work_asks(s: &Step) -> Option<(String, &'static str)> {
+    let text = |k: &str| s.args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    if s.tool == "run_command" {
+        let cmd = text("command");
+        return work::command_asks(&cmd).map(|why| (format!("Run “{cmd}”? {why}"), "Run"));
+    }
+    let key = match s.tool {
+        "read_file" | "write_file" => "path",
+        "list_files" => "folder",
+        _ => return None,
+    };
+    let home = work::home()?;
+    let raw = text(key);
+    let path = if raw.is_empty() { home.clone() } else { work::resolve(&raw, &home).ok()? };
+    let shown = work::shown(&path, &home);
+    let why = work::file_asks(&path, &home).or_else(|| {
+        (s.tool == "write_file" && std::fs::metadata(&path).is_ok_and(|m| m.len() > work::UNDO_MAX)).then_some("It's too big for me to keep a copy for Undo.")
+    })?;
+    Some(match s.tool {
+        "write_file" => (format!("Write {shown}? {why}"), "Write"),
+        "read_file" => (format!("Read {shown}? {why}"), "Read"),
+        _ => (format!("Look in {shown}? {why}"), "Look"),
+    })
 }
 
 /// A card for step `i`, the request waiting with it (answered by `assistant_answer`).
@@ -1096,7 +1286,7 @@ fn wait_on_card(app: &AppHandle, steps: &[Step], i: usize, said: Vec<String>, un
     let text = if prefix.is_empty() { text } else { format!("{prefix} {text}") };
     let card = Card { id, text: text.clone(), button, plain };
     state.with(|inner| {
-        inner.waiting.push(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone() });
+        inner.waiting.push(Waiting { id, steps: steps.to_vec(), at: i, said, undo, card: card.clone(), agent: None });
         let extra = inner.waiting.len().saturating_sub(6);
         inner.waiting.drain(..extra);
     });
@@ -1164,6 +1354,12 @@ async fn run_steps_in(app: &AppHandle, steps: &[Step], at: usize, mut said: Vec<
                     said.push(e);
                     return Reply { mood: "sorry", ..finish(app, said, undo, true) };
                 }
+            }
+        }
+        // 21a: drastic commands, and files outside your home folder or hidden: ask first.
+        if !confirmed {
+            if let Some((text, button)) = work_asks(s) {
+                return wait_on_card(app, steps, i, said, undo, text, button.into(), false, plan);
             }
         }
         let proposal = Proposal { tool: s.tool.to_string(), args: s.args.clone(), from_untrusted: false };
@@ -1261,9 +1457,10 @@ async fn ask_inner(app: AppHandle, text: String, heard: Option<String>) -> Reply
 
 /// 19h-2: `r` said aloud too, if Settings → Assistant → Speak replies says so for a request you
 /// said (`spoken`) or typed / clicked.
+/// 21f: what you asked to have read out is said even when typed (unless Speak replies is Never).
 fn aloud(app: &AppHandle, r: Reply, spoken: bool) -> Reply {
-    if !r.text.is_empty() && super::speech::speak_pref().says(spoken) {
-        super::speech::say(app, &r.text);
+    if !r.text.is_empty() && super::speech::speak_pref().says(spoken || r.long) {
+        super::speech::say_upto(app, &r.text, if r.long { super::speech::READ_CHARS } else { super::speech::MAX_CHARS });
     }
     r
 }
@@ -1374,6 +1571,330 @@ fn fill_in_it(steps: &mut [Step], last: Option<&str>) {
     }
 }
 
+// ---- 21b: the work loop ----
+
+/// A task of the work loop, as far as it got.
+struct AgentRun {
+    brain: agent::Brain,
+    convo: agent::Convo,
+    /// The calls of the model's last answer not yet done (the first may wait on a card).
+    pending: std::collections::VecDeque<agent::Call>,
+    /// What the calls done so far did, by id, for the next request.
+    results: Vec<(String, String)>,
+    calls: usize,
+    items: Vec<PlanItem>,
+    undo: Vec<Undo>,
+    /// Something from the internet is in the conversation (`agent::taints`).
+    tainted: bool,
+}
+
+enum Check {
+    Run(Vec<Step>),
+    Ask(String, String, bool),
+    Refuse(String),
+}
+
+/// The plan line for a call.
+fn describe_call(c: &agent::Call) -> String {
+    if c.name == agent::DESKTOP {
+        return format!("“{}”", c.args["request"].as_str().unwrap_or(""));
+    }
+    match super::tools::find(&c.name) {
+        Some(t) => rules::describe(&Step { tool: t.name, args: c.args.clone() }),
+        None => c.name.clone(),
+    }
+}
+
+/// Whether `s` could send something out (asked first once the internet is in the task).
+fn sends_out(s: &Step) -> bool {
+    match s.tool {
+        "open_link" | "search_web" => true,
+        "run_command" => {
+            let cmd = s.args["command"].as_str().unwrap_or("");
+            work::programs(cmd).iter().any(|p| work::SENDS.contains(&p.as_str())) || cmd.contains("git push")
+        }
+        _ => false,
+    }
+}
+
+/// 21b: what to do with one of the model's calls: the same checks as every step (unknown tools
+/// and bad details refused; Tier 2, the internet as Settings allows, typing into terminals,
+/// drastic commands and files asking first), and, once something from the internet is in the
+/// task, steps that could send something out ask too. `confirmed`: its card was clicked.
+async fn agent_check(app: &AppHandle, call: &agent::Call, local: bool, tainted: bool, confirmed: bool, ctx: &mut Ctx) -> Check {
+    let steps: Vec<Step> = if call.name == agent::DESKTOP {
+        let req = call.args["request"].as_str().unwrap_or("").trim().to_string();
+        match rules::parse(&req) {
+            Parsed::Steps(s) if !s.is_empty() && s.iter().all(|s| !super::tools::WORK.contains(&s.tool)) => s,
+            _ => return Check::Refuse(format!("Siva's rules don't know “{req}”. Use another tool, or say it more simply.")),
+        }
+    } else {
+        // 21f: each brain only its own tools (the cloud AI never reads a window).
+        let Some(t) = super::tools::find(&call.name).filter(|t| (if local { agent::LOCAL_TOOLSET } else { agent::TOOLSET }).contains(&t.name)) else {
+            return Check::Refuse(format!("There's no tool called {}.", call.name));
+        };
+        // 21f: a detail left empty is left out (Groq sends `topic: ""`, and it was refused).
+        let mut args = call.args.clone();
+        if let Some(o) = args.as_object_mut() {
+            o.retain(|k, v| v.as_str().is_none_or(|s| !s.trim().is_empty()) || t.params.iter().any(|p| p.name == k && p.required));
+        }
+        if let Err(e) = t.validate(&args) {
+            return Check::Refuse(format!("{}: {e}.", t.name));
+        }
+        vec![Step { tool: t.name, args }]
+    };
+    for s in &steps {
+        let proposal = Proposal { tool: s.tool.to_string(), args: s.args.clone(), from_untrusted: false };
+        match policy::decide(&proposal, 0) {
+            Decision::Refuse(r) => return Check::Refuse(r.to_string()),
+            Decision::Confirm { .. } if !confirmed => {
+                let (text, button) = confirm_text(s.tool, &s.args, s.args.get("window").and_then(Value::as_str));
+                return Check::Ask(text, button, false);
+            }
+            _ => {}
+        }
+        if super::web::online(s.tool) {
+            match super::web::load_prefs().mode {
+                super::web::Mode::Off => return Check::Refuse("I'm not allowed online (Settings → Assistant → Internet is Off).".into()),
+                super::web::Mode::Ask if !confirmed => {
+                    let what = rules::describe(s);
+                    let what = what.chars().next().map(|f| f.to_lowercase().chain(what.chars().skip(1)).collect::<String>()).unwrap_or_default();
+                    return Check::Ask(format!("May I go online to {what}?"), "Go Online".into(), true);
+                }
+                _ => {}
+            }
+        }
+        if confirmed {
+            continue;
+        }
+        if matches!(s.tool, "type_text" | "write_text" | "press_keys") {
+            match typing_window(app, s, ctx).await {
+                Ok(w) => {
+                    if let Some(why) = policy::typing_asks(s.tool, &s.args, policy::is_terminal(&w.app_id, &w.name, &w.about)) {
+                        return Check::Ask(format!("{} in {}? {why}", rules::describe(s), w.name), "Go Ahead".into(), false);
+                    }
+                }
+                Err(e) => return Check::Refuse(e),
+            }
+        }
+        if let Some((text, button)) = work_asks(s) {
+            return Check::Ask(text, button.into(), false);
+        }
+        if tainted && sends_out(s) {
+            return Check::Ask(format!("{}? It follows from something I read online.", rules::describe(s)), "Go Ahead".into(), false);
+        }
+    }
+    Check::Run(steps)
+}
+
+fn emit_items(app: &AppHandle, items: &[PlanItem]) {
+    let _ = app.emit("kompact-assistant-plan", json!({"task": current_task(), "items": items}));
+}
+
+/// The task's last words, with its plan and one Undo for all it changed.
+fn agent_done(app: &AppHandle, run: AgentRun, text: String, mood: &'static str) -> Reply {
+    // gpt-oss writes narrow no-break spaces between words.
+    let text = text.replace(['\u{202f}', '\u{a0}'], " ");
+    info!("agent: done after {} calls: {text:?}", run.calls);
+    let long = agent::asks_to_read(run.convo.messages.first().and_then(|m| m["content"].as_str()).unwrap_or(""));
+    activity::record(app, if mood == "sorry" { Kind::Failed } else { Kind::Ran }, "", &format!("Task: {text}"));
+    let mut r = finish(app, vec![text], run.undo, false);
+    r.mood = mood;
+    r.long = long;
+    r.plan = (!run.items.is_empty()).then_some(run.items);
+    r
+}
+
+/// The next answer, waiting (with a line in the plan) when the provider is rate-limited.
+async fn agent_ask(app: &AppHandle, run: &mut AgentRun) -> Result<(agent::Turn, Value), String> {
+    for _ in 0..=agent::RETRIES {
+        // 21c: the model on this PC takes a while: say so in the plan.
+        let thinking = run.brain.is_local();
+        if thinking {
+            run.items.push(PlanItem { text: "Thinking (on this PC)".into(), state: "now" });
+            emit_items(app, &run.items);
+        }
+        let (b, c) = (run.brain.clone(), run.convo.clone());
+        let answer = tauri::async_runtime::spawn_blocking(move || agent::ask(&b, &c)).await.map_err(|e| e.to_string())?;
+        if thinking {
+            run.items.pop();
+            emit_items(app, &run.items);
+        }
+        match answer {
+            Ok(r) => return Ok(r),
+            Err(agent::Failed::Other(e)) => return Err(e),
+            Err(agent::Failed::Wait(secs)) if secs > agent::LONGEST_WAIT => return Err(format!("{} is busy for {:.0} s more (its free limit)", run.brain.name(), secs)),
+            Err(agent::Failed::Wait(secs)) => {
+                run.items.push(PlanItem { text: format!("Waiting {:.0} s for {} (its free limit)", secs.ceil(), run.brain.name()), state: "now" });
+                emit_items(app, &run.items);
+                let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs + 0.5);
+                while std::time::Instant::now() < until {
+                    if stop_asked() {
+                        run.items.pop();
+                        return Err("stopped".into());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                run.items.pop();
+                emit_items(app, &run.items);
+            }
+        }
+    }
+    Err(format!("{} stayed busy", run.brain.name()))
+}
+
+/// 21b: the loop: run the calls the model made, give it what happened, ask again, until it
+/// answers in words (or Stop, a card's Cancel, `MAX_CALLS`).
+async fn agent_loop(app: &AppHandle, mut run: AgentRun, mut confirmed: bool) -> Reply {
+    let mut ctx = Ctx::default();
+    loop {
+        if stop_asked() {
+            info!("agent: stopped after {} calls", run.calls);
+            return agent_done(app, run, "Stopped.".into(), "happy");
+        }
+        if let Some(call) = run.pending.pop_front() {
+            if run.calls >= agent::MAX_CALLS {
+                return agent_done(app, run, format!("I stopped after {} steps; the task may not be finished.", agent::MAX_CALLS), "sorry");
+            }
+            // Back from a card: its line is there already.
+            if run.items.last().is_some_and(|i| i.state == "asks") {
+                run.items.last_mut().unwrap().state = "now";
+            } else {
+                run.items.push(PlanItem { text: describe_call(&call), state: "now" });
+            }
+            emit_items(app, &run.items);
+            let check = agent_check(app, &call, run.brain.is_local(), run.tainted, confirmed, &mut ctx).await;
+            confirmed = false;
+            match check {
+                Check::Refuse(why) => {
+                    info!("agent: refused {}: {why}", call.name);
+                    activity::record(app, Kind::Refused, "", &format!("{}: {why}", call.name));
+                    run.items.last_mut().unwrap().state = "failed";
+                    run.results.push((call.id.clone(), format!("Not done: {why}")));
+                }
+                Check::Ask(text, button, plain) => {
+                    run.items.last_mut().unwrap().state = "asks";
+                    emit_items(app, &run.items);
+                    activity::record(app, Kind::AsksFirst, "", &text);
+                    info!("agent: asks first: {}", call.name);
+                    run.pending.push_front(call);
+                    let state = app.state::<Assistant>();
+                    let id = state.id();
+                    let card = Card { id, text: text.clone(), button, plain };
+                    let items = run.items.clone();
+                    state.with(|inner| {
+                        inner.waiting.push(Waiting { id, steps: Vec::new(), at: 0, said: Vec::new(), undo: Vec::new(), card: card.clone(), agent: Some(Box::new(run)) });
+                        let extra = inner.waiting.len().saturating_sub(6);
+                        inner.waiting.drain(..extra);
+                    });
+                    return Reply { confirm: Some(card), plan: Some(items), ..reply(text, "concerned") };
+                }
+                Check::Run(steps) => {
+                    run.calls += 1;
+                    let links_before = ctx.links.len();
+                    let mut out = Vec::new();
+                    let mut ok = true;
+                    for s in &steps {
+                        match run_step(app, s, &mut ctx).await {
+                            Ok(d) => {
+                                info!("agent: ran {}", s.tool);
+                                activity::record(app, Kind::Ran, s.tool, &d.text);
+                                out.push(d.text);
+                                run.undo.extend(d.undo);
+                            }
+                            Err(e) => {
+                                info!("agent: {} failed: {e}", s.tool);
+                                activity::record(app, Kind::Failed, s.tool, &e);
+                                out.push(format!("Failed: {e}"));
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if steps.iter().any(|s| agent::taints(s.tool, &s.args)) {
+                        run.tainted = true;
+                    }
+                    // 21e: a web search shown in the browser also brings its results back, so "the
+                    // first result" can be opened or told (the model picks search_web for
+                    // "search … in google", and can't click in the page).
+                    if ok {
+                        for s in steps.iter().filter(|s| s.tool == "search_web" && s.args.get("site").and_then(Value::as_str).is_none_or(|site| site == "web")) {
+                            let look = Step { tool: "look_up", args: json!({"query": s.args["query"], "want": "results"}) };
+                            if super::web::load_prefs().mode != super::web::Mode::Off {
+                                if let Err(e) = run_step(app, &look, &mut ctx).await {
+                                    info!("agent: the search's results: {e}");
+                                }
+                                run.tainted = true;
+                            }
+                        }
+                    }
+                    // 21e: what a look-up found, with the addresses (to open "the first result").
+                    if ctx.links.len() > links_before {
+                        out.push(agent::links_text(&ctx.links[links_before..]));
+                    }
+                    run.items.last_mut().unwrap().state = if ok { "done" } else { "failed" };
+                    emit_items(app, &run.items);
+                    run.results.push((call.id.clone(), out.join("\n")));
+                }
+            }
+            continue;
+        }
+        if !run.results.is_empty() {
+            let r = std::mem::take(&mut run.results);
+            run.convo.push_results(&r);
+        }
+        run.convo.compact();
+        let (turn, back) = match agent_ask(app, &mut run).await {
+            Ok(t) => t,
+            Err(e) if e == "stopped" => return agent_done(app, run, "Stopped.".into(), "happy"),
+            // 21c: the cloud AI failed before the task began: the model on this PC takes it.
+            Err(e) if run.calls == 0 && !run.brain.is_local() && super::local::ready() => {
+                info!("agent: {} couldn't start the task ({e}); the model on this PC takes it", run.brain.name());
+                let goal = run.convo.messages.first().and_then(|m| m["content"].as_str()).unwrap_or("").to_string();
+                run.brain = agent::Brain::Local;
+                run.convo = agent::Convo::new(agent::Shape::OpenAi, run.convo.system.clone(), &goal, true);
+                continue;
+            }
+            Err(e) => {
+                let who = if run.brain.is_local() { "My model on this PC" } else { "The cloud AI" };
+                return agent_done(app, run, format!("{who} stopped helping: {e}."), "sorry");
+            }
+        };
+        if turn.calls.is_empty() {
+            let text = turn.text.trim().to_string();
+            let links = std::mem::take(&mut ctx.links);
+            let r = agent_done(app, run, if text.is_empty() { "Done.".into() } else { text }, "happy");
+            return Reply { links, ..r };
+        }
+        run.convo.push_assistant(back);
+        run.pending.extend(turn.calls);
+    }
+}
+
+/// 21e: whether `want` names an app here (or a site Siva knows), as `open_app` would find it.
+fn app_known(app: &AppHandle, want: &str) -> bool {
+    let apps: Vec<AppCand> = app.state::<crate::overlay::Overlay>().apps().into_iter().map(|a| AppCand { about: format!("{} {}", a.keywords, a.comment), id: a.id, name: a.name }).collect();
+    best_app(want, &apps).is_some() || super::browser::site_for(want).is_some()
+}
+
+/// 21b: a task for the work loop, on `brain` (21c: the cloud AI, or the model on this PC).
+async fn work_on(app: &AppHandle, brain: agent::Brain, text: &str) -> Reply {
+    let home = work::home().map(|h| h.display().to_string()).unwrap_or_else(|| "~".into());
+    let now = super::diagnose::now_text(crate::datetime::load_prefs().hour24);
+    let mut apps: Vec<String> = windows(app).into_iter().map(|w| w.name).collect();
+    apps.sort();
+    apps.dedup();
+    let local = brain.is_local();
+    match &brain {
+        agent::Brain::Cloud(p) => info!("agent: a task for {} {} ({} characters)", p.provider().id, p.model(), text.chars().count()),
+        agent::Brain::Local => info!("agent: a task for {} on this PC ({} characters)", super::local::NAME, text.chars().count()),
+    }
+    activity::record(app, Kind::Understood, "", &format!("A task for {}", brain.name()));
+    let convo = agent::Convo::new(brain.shape(), agent::system_prompt(&home, &now, &apps, local), text.trim(), local);
+    let run = AgentRun { brain, convo, pending: Default::default(), results: Vec::new(), calls: 0, items: Vec::new(), undo: Vec::new(), tainted: false };
+    agent_loop(app, run, false).await
+}
+
 async fn request_inner(app: &AppHandle, text: &str) -> Reply {
     // 20c: cards waiting for other tasks stay (each is answered by its own id).
     // 19e: a routine ("set up for coding") before the rules ("start coding" would open an app).
@@ -1390,6 +1911,47 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
         };
     }
     let parsed = rules::parse(text);
+    // 21e: "set volume" without how much: ask, with buttons.
+    if ["set volume", "set the volume", "change volume", "change the volume", "adjust volume", "adjust the volume", "volume"].contains(&rules::normalize(text).as_str()) {
+        let choices = [25, 50, 75, 100].iter().map(|v| Choice { label: format!("{v}%"), request: format!("volume {v}") }).collect();
+        return Reply { choices, ..reply("What volume?", "speaking") };
+    }
+    // 21b: work on files, code and commands goes to the work loop, on the cloud AI when it's in
+    // use, else (21c) the model on this PC when it's set up (what the rules do with only the
+    // work tools, like "run python3 hello.py", stays with them).
+    // 21f: what's in your windows stays on this PC: a request the rules read a window for runs
+    // with them (no AI), and a task about a window's contents ("summarize this page") goes only
+    // to the model on this PC, never to the cloud AI.
+    let reads_window = matches!(&parsed, Parsed::Steps(s) if s.iter().any(|s| s.tool == "read_window"));
+    let brain = if reads_window {
+        None
+    } else if agent::about_window(&rules::normalize(text)) {
+        super::local::ready().then_some(agent::Brain::Local)
+    } else {
+        super::cloud::active().map(agent::Brain::Cloud).or_else(|| super::local::ready().then_some(agent::Brain::Local))
+    };
+    if let Some(brain) = brain {
+        let mut work = agent::is_work(&rules::normalize(text))
+            && match &parsed {
+                Parsed::Steps(s) => !s.iter().all(|s| super::tools::WORK.contains(&s.tool)),
+                Parsed::Unknown(_) => true,
+                _ => false,
+            };
+        // 21e: with the cloud AI, also what the rules can't do whole (from Siva's log, 2026-10-27):
+        // a part they don't know ("search flipkart and open the first result"), or an app that
+        // isn't here ("open google news and read the headlines"). Talk stays talk. The model on
+        // this PC is too slow for these.
+        if !work && !brain.is_local() {
+            work = match &parsed {
+                Parsed::Unknown(_) => super::model::about_desktop(text) && !rules::is_remark(text),
+                Parsed::Steps(s) => s.iter().any(|s| s.tool == "open_app" && !app_known(app, s.args["app"].as_str().unwrap_or(""))),
+                _ => false,
+            };
+        }
+        if work {
+            return work_on(app, brain, text).await;
+        }
+    }
     // 20a: just a name ("Firefox"): what to do with it? (Never chat about it.)
     if matches!(parsed, Parsed::Unknown(_)) && rules::just_a_name(text) {
         if let Some(r) = clarify(app, text) {
@@ -1620,6 +2182,18 @@ async fn answer(app: &AppHandle, id: u64, confirm: bool) -> Reply {
     let app = app.clone();
     let waiting = app.state::<Assistant>().with(|i| i.waiting.iter().position(|w| w.id == id).map(|p| i.waiting.remove(p)));
     let Some(w) = waiting else { return reply("That question has gone; ask me again.", "sorry") };
+    // 21b: a step of the work loop: on with it, or the task stops here.
+    if let Some(run) = w.agent {
+        let tool = run.pending.front().map(|c| c.name.clone()).unwrap_or_default();
+        if !confirm {
+            info!("agent: cancelled {tool}");
+            activity::record(&app, Kind::Cancelled, "", &format!("{tool}: not done"));
+            return agent_done(&app, *run, "Okay, I won't. I stopped the task there.".into(), "happy");
+        }
+        info!("agent: confirmed {tool} (clicked)");
+        activity::record(&app, Kind::Confirmed, "", &format!("{tool}: clicked"));
+        return agent_loop(&app, *run, true).await;
+    }
     if !confirm {
         info!("assistant: cancelled {}", w.steps[w.at].tool);
         activity::record(&app, Kind::Cancelled, w.steps[w.at].tool, "Not done");

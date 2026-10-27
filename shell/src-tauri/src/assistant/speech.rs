@@ -28,6 +28,8 @@ pub const STEP_MS: usize = 80;
 pub const LATENCY_MS: u64 = 150;
 /// Longer replies are cut to their first sentences (the HUD shows all of it).
 pub const MAX_CHARS: usize = 320;
+/// 21e-2: what you asked to be read out ("read the headlines") may be this long.
+pub const READ_CHARS: usize = 1500;
 
 // ---- when to speak (pure) ----
 
@@ -82,6 +84,15 @@ pub fn prefs_text(speak: Speak) -> String {
 /// The reply as Piper should read it: quotes and symbols it would spell out dropped, "%" as a
 /// word, at most `MAX_CHARS` (whole sentences when it can). None when nothing's left to say.
 pub fn speakable(text: &str) -> Option<String> {
+    speakable_upto(text, MAX_CHARS)
+}
+
+/// `speakable`, at most `max` characters.
+pub fn speakable_upto(text: &str, max: usize) -> Option<String> {
+    // 21e-2: one item a line (headlines): a pause after each, not one run-on sentence.
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let text = lines.iter().map(|l| if l.ends_with(['.', '!', '?', ':', ',', ';']) { l.to_string() } else { format!("{l}.") }).collect::<Vec<_>>().join(" ");
+    let text = if lines.len() > 1 { text } else { lines.first().map(|l| l.to_string()).unwrap_or_default() };
     let mut out = String::new();
     for c in text.chars() {
         match c {
@@ -96,8 +107,8 @@ pub fn speakable(text: &str) -> Option<String> {
         }
     }
     let mut text = out.split_whitespace().collect::<Vec<_>>().join(" ").replace(" ,", ",");
-    if text.chars().count() > MAX_CHARS {
-        let cut: String = text.chars().take(MAX_CHARS).collect();
+    if text.chars().count() > max {
+        let cut: String = text.chars().take(max).collect();
         text = match cut.rfind(['.', '!', '?']) {
             Some(i) if i > 40 => cut[..=i].to_string(),
             _ => format!("{}…", cut.trim_end()),
@@ -167,7 +178,12 @@ pub fn hush() {
 /// Say `text` (off the main thread; returns at once), after whatever is being said (20c). The
 /// HUD hears `kompact-assistant` `speaking` and then `spoken`, and the wave follows.
 pub fn say(app: &AppHandle, text: &str) {
-    let Some(text) = speakable(text) else { return };
+    say_upto(app, text, MAX_CHARS);
+}
+
+/// 21e-2: `say`, at most `max` characters (`READ_CHARS` for what you asked to be read out).
+pub fn say_upto(app: &AppHandle, text: &str, max: usize) {
+    let Some(text) = speakable_upto(text, max) else { return };
     if installed().is_none() {
         return;
     }
@@ -383,6 +399,10 @@ mod tests {
         let long = "This is one sentence that goes on for a while. ".repeat(12);
         let s = speakable(&long).unwrap();
         assert!(s.chars().count() <= MAX_CHARS && s.ends_with('.'), "cut at a sentence: {s}");
+        // 21e-2: headlines one a line, each its own sentence; read out in full when asked.
+        assert_eq!(speakable("Cyclone Arnab nears land, IMD says\nSensex closes higher\n").as_deref(), Some("Cyclone Arnab nears land, IMD says. Sensex closes higher."));
+        let long = "A long headline about something that happened today\n".repeat(20);
+        assert!(speakable_upto(&long, READ_CHARS).unwrap().chars().count() > MAX_CHARS);
     }
 
     #[test]

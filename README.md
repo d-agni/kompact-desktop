@@ -94,8 +94,11 @@ panes. It is a [Tauri 2](https://tauri.app) app: Rust (about 11,500 lines) for t
 the looks, drawn on wlr-layer-shell surfaces. It also holds **Siva**, the assistant (the ring
 in the menu bar, or Ctrl+Super+V): it hears you with whisper.cpp, answers with Piper and
 understands with a small llama.cpp model, all on the CPU; it controls the desktop, types and
-writes into apps through kompact, and looks things up online as Settings allows. Drastic actions
-ask first, enforced in code. The same crate builds two more programs:
+writes into apps through kompact, and looks things up online as Settings allows. It also does
+real tasks: it writes files and runs commands in a terminal you can watch, working step by step
+on a cloud AI with your own key or on a local coding model, and reads inside apps through
+accessibility (AT-SPI), reading pages out on this PC. Drastic actions ask first, enforced in
+code. The same crate builds two more programs:
 
 - `kompact-lock`, the lock screen (gtk-session-lock + PAM);
 - `kompact-greeter`, the login screen (for [greetd](https://sr.ht/~kennylevinsen/greetd/));

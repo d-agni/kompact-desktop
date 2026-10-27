@@ -4,7 +4,8 @@
 //!
 //! It is held to exactly what the local model is: it is given only your words (and, for
 //! talking, the last few things you and Siva said to each other), never window titles, files or
-//! the screen; its calls are read by `model::read_answer`, checked by `tools::validate`, kept
+//! the screen (21b: a task in the work loop, `agent`, also gives it the open apps' names and
+//! what its own steps return); its calls are read by `model::read_answer`, checked by `tools::validate`, kept
 //! only when about your words (`model::keep_grounded`) and go through `policy` (drastic ones
 //! still need your click). Its talk is checked by `model::checked_talk`. When it fails (no
 //! internet, a wrong key, a used-up quota) the local model answers instead.
@@ -132,7 +133,7 @@ pub fn active() -> Option<Prefs> {
 
 /// Anthropic's models that take `output_config.effort` (and its server-side fallbacks, for
 /// the ones that have them).
-fn takes_effort(model: &str) -> bool {
+pub fn takes_effort(model: &str) -> bool {
     ["claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6"].iter().any(|m| model.starts_with(m))
 }
 

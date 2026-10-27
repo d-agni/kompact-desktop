@@ -761,6 +761,12 @@ function renderAssistant() {
     : model.ready
       ? `Ready (${model.model}): “I can't hear anything”, “get the browser out of the way”. A second or two; a guess of several steps asks first.`
       : `Not set up yet. ${model.missing}`;
+  // 21c: the model for tasks (files, code, commands) when there's no cloud AI.
+  if (model) {
+    $("as-model").textContent += model.work
+      ? " Tasks without a cloud AI: Qwen2.5-Coder 3B, slower (non-commercial license)."
+      : " For tasks without a cloud AI, run “kompact-assistant-setup work” (2.1 GB; non-commercial license).";
+  }
   renderInternet();
   renderCloud();
   renderActivity();
@@ -1122,6 +1128,15 @@ try {
 } catch {
   // A private window: the first tab.
 }
+// 21d: Read inside apps.
+void asCall("read_apps_state").then((on) => {
+  /** @type {HTMLInputElement} */ ($("as-read-apps")).checked = on !== false;
+});
+$("as-read-apps").addEventListener("change", async (e) => {
+  const box = /** @type {HTMLInputElement} */ (e.target);
+  const on = await asCall("set_read_apps", { on: box.checked });
+  if (on == null) box.checked = !box.checked;
+});
 $("as-hearing").addEventListener("change", async (e) => {
   const st = await asCall("set_hearing", { hearing: /** @type {HTMLSelectElement} */ (e.target).value });
   if (st) voice = st;
