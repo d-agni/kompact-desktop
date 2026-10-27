@@ -18,7 +18,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
 use tracing::info;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
@@ -50,7 +49,6 @@ pub mod role {
     pub const SPIN_BUTTON: u32 = 52;
     pub const TABLE_CELL: u32 = 56;
     pub const TERMINAL: u32 = 60;
-    pub const TEXT: u32 = 61;
     pub const TOGGLE_BUTTON: u32 = 62;
     pub const ENTRY: u32 = 79;
     pub const DOCUMENT_FRAME: u32 = 82;
@@ -65,7 +63,6 @@ pub mod role {
 pub mod state {
     pub const BUSY: u32 = 3;
     pub const CHECKED: u32 = 4;
-    pub const EDITABLE: u32 = 7;
     pub const FOCUSED: u32 = 12;
     pub const SELECTED: u32 = 23;
     pub const SHOWING: u32 = 25;
@@ -476,20 +473,8 @@ pub fn busy(n: &Node) -> bool {
     n.has(state::BUSY) || n.children.iter().any(busy)
 }
 
-/// A window of an app, by its AT-SPI app name and frame title.
-#[derive(Debug, Clone, Serialize)]
-pub struct Frame {
-    pub app: String,
-    pub title: String,
-}
-
-/// The window best fitting `title` / `app_id` / `name` (kompact's), as an outline of at most
-/// `max` characters.
-pub async fn read_window(title: &str, app_id: &str, app_name: &str, max: usize) -> Result<String, String> {
-    read_as(title, app_id, app_name, Want::Outline, max, false).await
-}
-
-/// That window as `want`. `fresh`: a page was just opened in it (the one before may still show
+/// The window best fitting `title` / `app_id` / `name` (kompact's) as `want` (an outline, its
+/// headlines or its page's text) of at most `max` characters. `fresh`: a page was just opened in it (the one before may still show
 /// for a moment); with what was read, in how long.
 pub async fn read_as(title: &str, app_id: &str, app_name: &str, want: Want, max: usize, fresh: bool) -> Result<String, String> {
     if !allowed() {

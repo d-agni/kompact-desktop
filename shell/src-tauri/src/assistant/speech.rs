@@ -175,13 +175,9 @@ pub fn hush() {
     }
 }
 
-/// Say `text` (off the main thread; returns at once), after whatever is being said (20c). The
+/// Say `text`, at most `max` characters (`MAX_CHARS`; 21e-2: `READ_CHARS` for what you asked to
+/// be read out), off the main thread (returns at once), after whatever is being said (20c). The
 /// HUD hears `kompact-assistant` `speaking` and then `spoken`, and the wave follows.
-pub fn say(app: &AppHandle, text: &str) {
-    say_upto(app, text, MAX_CHARS);
-}
-
-/// 21e-2: `say`, at most `max` characters (`READ_CHARS` for what you asked to be read out).
 pub fn say_upto(app: &AppHandle, text: &str, max: usize) {
     let Some(text) = speakable_upto(text, max) else { return };
     if installed().is_none() {
