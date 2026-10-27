@@ -16,14 +16,16 @@ pub fn web_address(text: &str) -> Option<String> {
 
 /// 20b: a well-known site's address, for "open youtube" when no app is called that.
 pub fn site_for(name: &str) -> Option<&'static str> {
-    const SITES: [(&str, &str); 18] = [
+    const SITES: [(&str, &str); 19] = [
         ("youtube", "https://www.youtube.com"), ("gmail", "https://mail.google.com"), ("google", "https://www.google.com"), ("github", "https://github.com"),
         ("wikipedia", "https://www.wikipedia.org"), ("netflix", "https://www.netflix.com"), ("amazon", "https://www.amazon.in"), ("facebook", "https://www.facebook.com"),
         ("instagram", "https://www.instagram.com"), ("twitter", "https://x.com"), ("reddit", "https://www.reddit.com"), ("whatsapp", "https://web.whatsapp.com"),
         ("linkedin", "https://www.linkedin.com"), ("chatgpt", "https://chatgpt.com"), ("claude", "https://claude.ai"), ("google maps", "https://maps.google.com"),
-        ("maps", "https://maps.google.com"), ("google drive", "https://drive.google.com"),
+        ("maps", "https://maps.google.com"), ("google drive", "https://drive.google.com"), ("google news", "https://news.google.com"),
     ];
     let n = name.trim().to_lowercase();
+    // 21f: "google news in firefox": the site, in the browser it names.
+    let n = [" in firefox", " on firefox", " in chrome", " in the browser", " in browser", " in my browser"].iter().find_map(|e| n.strip_suffix(e)).unwrap_or(&n).trim();
     SITES.iter().find(|(k, _)| *k == n).map(|(_, u)| *u)
 }
 
@@ -60,6 +62,9 @@ mod tests {
     fn web_addresses() {
         assert_eq!(site_for("YouTube"), Some("https://www.youtube.com"));
         assert_eq!(site_for("gmail"), Some("https://mail.google.com"));
+        assert_eq!(site_for("Google News"), Some("https://news.google.com"));
+        assert_eq!(site_for("google news in firefox"), Some("https://news.google.com"), "from Siva's log");
+        assert_eq!(site_for("firefox"), None);
         assert_eq!(site_for("text editor"), None);
         assert_eq!(web_address("github.com").as_deref(), Some("https://github.com"));
         assert_eq!(web_address("en.wikipedia.org/wiki/Chennai").as_deref(), Some("https://en.wikipedia.org/wiki/Chennai"));

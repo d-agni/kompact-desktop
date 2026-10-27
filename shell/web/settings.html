@@ -483,7 +483,9 @@
           <div class="row"><span class="row-label">Volume, music, windows, desktops, Wi-Fi, Bluetooth, Do Not Disturb, dark mode, opening apps, typing and writing into apps<span class="hint">Done at once; most have Undo.</span></span></div>
           <div class="row"><span class="row-label">Closing windows, logging out, sleep, restart, power off; typing into a terminal; keys that quit an app or delete for good<span class="hint">It asks first, every time, and only a click on its button says yes; saying “yes” doesn't.</span></span></div>
           <div class="row"><span class="row-label">Going online<span class="hint">As the Internet tab says: always, after asking, or never. Online it only reads.</span></span></div>
-          <div class="row"><span class="row-label">Anything else<span class="hint">It can't: no reading your files, no passwords, no installing.</span></span></div>
+          <div class="row"><span class="row-label">Files and commands<span class="hint">Writing, reading and listing files in your home folder, and running commands in its own terminal, at once (a file it wrote has Undo). Deleting, sudo, files outside your home folder or hidden ones, and anything that could send out what it read online ask first.</span></span></div>
+          <label class="row"><span class="row-label">Read inside apps<span class="hint">What's in a window (a page, a document, a terminal), through accessibility, when you ask or a task needs it; never password fields, never the shell's own windows. Firefox and Chrome-based apps join in after a restart.</span></span><input id="as-read-apps" class="switch" type="checkbox" role="switch"></label>
+          <div class="row"><span class="row-label">Anything else<span class="hint">It can't: no passwords, no installing, no seeing the screen as a picture.</span></span></div>
         </section>
       </div>
       <div class="as-tab" data-tab="routines" role="tabpanel" hidden>

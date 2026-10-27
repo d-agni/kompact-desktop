@@ -127,6 +127,9 @@ pub struct Reply {
     pub choices: Vec<Choice>,
     /// 20d: what a look-up found, listed under the reply (headlines, results, the week's days).
     pub links: Vec<super::web::Link>,
+    /// 21e-2: you asked for it to be read out: said in full (up to `speech::READ_CHARS`).
+    #[serde(skip)]
+    pub long: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -248,7 +251,7 @@ pub struct Card {
 }
 
 fn reply(text: impl Into<String>, mood: &'static str) -> Reply {
-    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None, choices: Vec::new(), links: Vec::new() }
+    Reply { text: text.into(), mood, undo: None, confirm: None, plan: None, choices: Vec::new(), links: Vec::new(), long: false }
 }
 
 const HELP: &str = "Try: “volume 30”, “dark mode”, “open Firefox”, “put Firefox and Terminal side by side”, \
@@ -369,6 +372,30 @@ struct Ctx {
     before_open: Option<Vec<u64>>,
     /// 20d: what look-ups found, for the reply's list.
     links: Vec<super::web::Link>,
+    /// 21f: this request opened a page in the browser (read next: that page, once it loads).
+    browsed: bool,
+}
+
+/// 21f: whether `w` is a web browser's window (its app's keywords say so).
+fn is_browser(w: &WinCand) -> bool {
+    let about = w.about.to_lowercase();
+    about.contains("browser") || about.contains("internet") || ["firefox", "chrom", "brave", "epiphany", "vivaldi"].iter().any(|b| w.app_id.to_lowercase().contains(b))
+}
+
+/// 21f: the browser window a page was just opened in (the one in front, else the first), waited
+/// for while the browser starts.
+async fn browser_window(app: &AppHandle) -> Result<WinCand, String> {
+    let start = std::time::Instant::now();
+    loop {
+        let list: Vec<WinCand> = windows(app).into_iter().filter(|w| is_browser(w) && !w.minimized).collect();
+        if let Some(w) = list.iter().find(|w| w.focused).or(list.first()) {
+            return Ok(w.clone());
+        }
+        if start.elapsed() > NEW_WINDOW_WAIT {
+            return Err("I can't find the browser's window.".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }
 
 /// 20d: a look-up (`web`, blocking) off the main thread.
@@ -708,6 +735,7 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             // 20b: no app called that, but a site is ("open youtube", "open gmail"): the site.
             let Some(found) = best_app(&want, &apps) else {
                 if let Some(url) = super::browser::site_for(&want) {
+                    ctx.browsed = true;
                     overlay.open_path(app, std::path::PathBuf::from(url));
                     return done(format!("Opening {want} in the browser."), None);
                 }
@@ -841,6 +869,7 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
         }
         "open_link" => {
             let url = super::browser::web_address(&str_arg("url")).ok_or("That doesn't look like a web address.")?;
+            ctx.browsed = true;
             app.state::<crate::overlay::Overlay>().open_path(app, std::path::PathBuf::from(&url));
             done(format!("Opening {url}."), None)
         }
@@ -948,6 +977,31 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
             let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
             done(format!("In {shown}: {}{tail}.", names.join(", ")), None)
         }
+        // 21d: what's inside a window, through accessibility.
+        // 21f: read out ("what"): the page's headlines or its text, picked out here on this PC.
+        "read_window" => {
+            use super::inside::Want;
+            let want = match a.get("what").and_then(Value::as_str) {
+                Some("headlines") => Want::Headlines,
+                Some("page") => Want::Page,
+                _ => Want::Outline,
+            };
+            let w = match a.get("window").and_then(Value::as_str) {
+                Some(q) => find_window(app, q, ctx).await?,
+                None if ctx.browsed => browser_window(app).await?,
+                None => windows(app).into_iter().find(|w| w.focused && !w.minimized).ok_or("There's no window in front to read.")?,
+            };
+            let max = if want == Want::Outline { super::inside::MAX_OUTLINE } else { super::speech::READ_CHARS };
+            let text = super::inside::read_as(&w.title, &w.app_id, &w.name, want, max, ctx.browsed).await?;
+            match want {
+                Want::Headlines if text.is_empty() => done(format!("I couldn't find headlines in {}.", w.name), None),
+                Want::Headlines => done(format!("The headlines:\n{text}"), None),
+                Want::Page if text.is_empty() => done(format!("{} shows nothing I can read out.", w.name), None),
+                Want::Page => done(text, None),
+                Want::Outline if text.lines().count() <= 1 => done(format!("{} shows nothing I can read.", w.name), None),
+                Want::Outline => done(format!("In {}:\n{text}", w.name), None),
+            }
+        }
         "write_file" => {
             let home = work::home().ok_or("I can't find your home folder.")?;
             let path = work::resolve(&str_arg("path"), &home)?;
@@ -969,23 +1023,27 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
         // 21a: in Siva's terminal, where you see it; its output comes back.
         "run_command" => {
             let home = work::home().ok_or("I can't find your home folder.")?;
+            // 21e: where the last command left Siva's terminal, unless a folder is named.
             let folder = match a.get("folder").and_then(Value::as_str) {
                 Some(f) => work::resolve(f, &home)?,
-                None => home.clone(),
+                None => work::folder_now().unwrap_or_else(|| home.clone()),
             };
             if !folder.is_dir() {
                 return Err(format!("There's no folder {}.", work::shown(&folder, &home)));
             }
             let cmd = str_arg("command");
             let task = current_task();
-            let c = cmd.clone();
-            let r = tauri::async_runtime::spawn_blocking(move || work::run(&c, &folder, || stop_asked_for(task))).await.map_err(|e| e.to_string())??;
+            let (c, f) = (cmd.clone(), folder.clone());
+            let r = tauri::async_runtime::spawn_blocking(move || work::run(&c, &f, || stop_asked_for(task))).await.map_err(|e| e.to_string())??;
             let short: String = if cmd.chars().count() > 60 { format!("{}…", cmd.chars().take(60).collect::<String>()) } else { cmd.clone() };
             let mut text = match r.exit {
                 Some(0) => format!("Ran “{short}”."),
                 Some(n) => format!("“{short}” ended with an error (exit {n})."),
                 None => return Err(format!("“{short}” is still running in Siva's terminal; I stopped waiting after {} s.", r.millis / 1000)),
             };
+            if let Some(now) = work::folder_now().filter(|n| *n != folder) {
+                text.push_str(&format!(" Siva's terminal is now in {}.", work::shown(&now, &home)));
+            }
             if !r.output.is_empty() {
                 text.push('\n');
                 text.push_str(&work::tail(&r.output, work::OUTPUT_KEPT));
@@ -1029,6 +1087,7 @@ async fn run_step(app: &AppHandle, s: &Step, ctx: &mut Ctx) -> Result<Done, Stri
         "search_web" => {
             let site = a.get("site").and_then(Value::as_str).unwrap_or("web");
             let url = super::browser::search_url(site, &str_arg("query"));
+            ctx.browsed = true;
             app.state::<crate::overlay::Overlay>().open_path(app, std::path::PathBuf::from(&url));
             done(format!("{}.", rules::describe(s)), None)
         }
@@ -1183,7 +1242,9 @@ async fn proceed(app: &AppHandle, steps: Vec<Step>, at: usize, said: Vec<String>
 async fn run_steps(app: &AppHandle, steps: &[Step], at: usize, said: Vec<String>, undo: Vec<Undo>, confirmed: bool, plan: &mut Plan<'_>) -> Reply {
     let mut ctx = Ctx::default();
     let r = run_steps_in(app, steps, at, said, undo, confirmed, plan, &mut ctx).await;
-    Reply { links: std::mem::take(&mut ctx.links), ..r }
+    // 21f: a page read out is said in full.
+    let long = r.long || steps.iter().any(|s| s.tool == "read_window" && s.args.get("what").is_some());
+    Reply { links: std::mem::take(&mut ctx.links), long, ..r }
 }
 
 /// 21a: the card for a work step that asks first (`work::command_asks`, `work::file_asks`), or
@@ -1396,9 +1457,10 @@ async fn ask_inner(app: AppHandle, text: String, heard: Option<String>) -> Reply
 
 /// 19h-2: `r` said aloud too, if Settings → Assistant → Speak replies says so for a request you
 /// said (`spoken`) or typed / clicked.
+/// 21f: what you asked to have read out is said even when typed (unless Speak replies is Never).
 fn aloud(app: &AppHandle, r: Reply, spoken: bool) -> Reply {
-    if !r.text.is_empty() && super::speech::speak_pref().says(spoken) {
-        super::speech::say(app, &r.text);
+    if !r.text.is_empty() && super::speech::speak_pref().says(spoken || r.long) {
+        super::speech::say_upto(app, &r.text, if r.long { super::speech::READ_CHARS } else { super::speech::MAX_CHARS });
     }
     r
 }
@@ -1559,7 +1621,7 @@ fn sends_out(s: &Step) -> bool {
 /// and bad details refused; Tier 2, the internet as Settings allows, typing into terminals,
 /// drastic commands and files asking first), and, once something from the internet is in the
 /// task, steps that could send something out ask too. `confirmed`: its card was clicked.
-async fn agent_check(app: &AppHandle, call: &agent::Call, tainted: bool, confirmed: bool, ctx: &mut Ctx) -> Check {
+async fn agent_check(app: &AppHandle, call: &agent::Call, local: bool, tainted: bool, confirmed: bool, ctx: &mut Ctx) -> Check {
     let steps: Vec<Step> = if call.name == agent::DESKTOP {
         let req = call.args["request"].as_str().unwrap_or("").trim().to_string();
         match rules::parse(&req) {
@@ -1567,13 +1629,19 @@ async fn agent_check(app: &AppHandle, call: &agent::Call, tainted: bool, confirm
             _ => return Check::Refuse(format!("Siva's rules don't know “{req}”. Use another tool, or say it more simply.")),
         }
     } else {
-        let Some(t) = super::tools::find(&call.name).filter(|t| agent::TOOLSET.contains(&t.name)) else {
+        // 21f: each brain only its own tools (the cloud AI never reads a window).
+        let Some(t) = super::tools::find(&call.name).filter(|t| (if local { agent::LOCAL_TOOLSET } else { agent::TOOLSET }).contains(&t.name)) else {
             return Check::Refuse(format!("There's no tool called {}.", call.name));
         };
-        if let Err(e) = t.validate(&call.args) {
+        // 21f: a detail left empty is left out (Groq sends `topic: ""`, and it was refused).
+        let mut args = call.args.clone();
+        if let Some(o) = args.as_object_mut() {
+            o.retain(|k, v| v.as_str().is_none_or(|s| !s.trim().is_empty()) || t.params.iter().any(|p| p.name == k && p.required));
+        }
+        if let Err(e) = t.validate(&args) {
             return Check::Refuse(format!("{}: {e}.", t.name));
         }
-        vec![Step { tool: t.name, args: call.args.clone() }]
+        vec![Step { tool: t.name, args }]
     };
     for s in &steps {
         let proposal = Proposal { tool: s.tool.to_string(), args: s.args.clone(), from_untrusted: false };
@@ -1628,9 +1696,11 @@ fn agent_done(app: &AppHandle, run: AgentRun, text: String, mood: &'static str) 
     // gpt-oss writes narrow no-break spaces between words.
     let text = text.replace(['\u{202f}', '\u{a0}'], " ");
     info!("agent: done after {} calls: {text:?}", run.calls);
+    let long = agent::asks_to_read(run.convo.messages.first().and_then(|m| m["content"].as_str()).unwrap_or(""));
     activity::record(app, if mood == "sorry" { Kind::Failed } else { Kind::Ran }, "", &format!("Task: {text}"));
     let mut r = finish(app, vec![text], run.undo, false);
     r.mood = mood;
+    r.long = long;
     r.plan = (!run.items.is_empty()).then_some(run.items);
     r
 }
@@ -1693,7 +1763,7 @@ async fn agent_loop(app: &AppHandle, mut run: AgentRun, mut confirmed: bool) -> 
                 run.items.push(PlanItem { text: describe_call(&call), state: "now" });
             }
             emit_items(app, &run.items);
-            let check = agent_check(app, &call, run.tainted, confirmed, &mut ctx).await;
+            let check = agent_check(app, &call, run.brain.is_local(), run.tainted, confirmed, &mut ctx).await;
             confirmed = false;
             match check {
                 Check::Refuse(why) => {
@@ -1721,6 +1791,7 @@ async fn agent_loop(app: &AppHandle, mut run: AgentRun, mut confirmed: bool) -> 
                 }
                 Check::Run(steps) => {
                     run.calls += 1;
+                    let links_before = ctx.links.len();
                     let mut out = Vec::new();
                     let mut ok = true;
                     for s in &steps {
@@ -1742,6 +1813,24 @@ async fn agent_loop(app: &AppHandle, mut run: AgentRun, mut confirmed: bool) -> 
                     }
                     if steps.iter().any(|s| agent::taints(s.tool, &s.args)) {
                         run.tainted = true;
+                    }
+                    // 21e: a web search shown in the browser also brings its results back, so "the
+                    // first result" can be opened or told (the model picks search_web for
+                    // "search … in google", and can't click in the page).
+                    if ok {
+                        for s in steps.iter().filter(|s| s.tool == "search_web" && s.args.get("site").and_then(Value::as_str).is_none_or(|site| site == "web")) {
+                            let look = Step { tool: "look_up", args: json!({"query": s.args["query"], "want": "results"}) };
+                            if super::web::load_prefs().mode != super::web::Mode::Off {
+                                if let Err(e) = run_step(app, &look, &mut ctx).await {
+                                    info!("agent: the search's results: {e}");
+                                }
+                                run.tainted = true;
+                            }
+                        }
+                    }
+                    // 21e: what a look-up found, with the addresses (to open "the first result").
+                    if ctx.links.len() > links_before {
+                        out.push(agent::links_text(&ctx.links[links_before..]));
                     }
                     run.items.last_mut().unwrap().state = if ok { "done" } else { "failed" };
                     emit_items(app, &run.items);
@@ -1773,11 +1862,19 @@ async fn agent_loop(app: &AppHandle, mut run: AgentRun, mut confirmed: bool) -> 
         };
         if turn.calls.is_empty() {
             let text = turn.text.trim().to_string();
-            return agent_done(app, run, if text.is_empty() { "Done.".into() } else { text }, "happy");
+            let links = std::mem::take(&mut ctx.links);
+            let r = agent_done(app, run, if text.is_empty() { "Done.".into() } else { text }, "happy");
+            return Reply { links, ..r };
         }
         run.convo.push_assistant(back);
         run.pending.extend(turn.calls);
     }
+}
+
+/// 21e: whether `want` names an app here (or a site Siva knows), as `open_app` would find it.
+fn app_known(app: &AppHandle, want: &str) -> bool {
+    let apps: Vec<AppCand> = app.state::<crate::overlay::Overlay>().apps().into_iter().map(|a| AppCand { about: format!("{} {}", a.keywords, a.comment), id: a.id, name: a.name }).collect();
+    best_app(want, &apps).is_some() || super::browser::site_for(want).is_some()
 }
 
 /// 21b: a task for the work loop, on `brain` (21c: the cloud AI, or the model on this PC).
@@ -1793,7 +1890,7 @@ async fn work_on(app: &AppHandle, brain: agent::Brain, text: &str) -> Reply {
         agent::Brain::Local => info!("agent: a task for {} on this PC ({} characters)", super::local::NAME, text.chars().count()),
     }
     activity::record(app, Kind::Understood, "", &format!("A task for {}", brain.name()));
-    let convo = agent::Convo::new(brain.shape(), agent::system_prompt(&home, &now, &apps), text.trim(), local);
+    let convo = agent::Convo::new(brain.shape(), agent::system_prompt(&home, &now, &apps, local), text.trim(), local);
     let run = AgentRun { brain, convo, pending: Default::default(), results: Vec::new(), calls: 0, items: Vec::new(), undo: Vec::new(), tainted: false };
     agent_loop(app, run, false).await
 }
@@ -1814,17 +1911,43 @@ async fn request_inner(app: &AppHandle, text: &str) -> Reply {
         };
     }
     let parsed = rules::parse(text);
+    // 21e: "set volume" without how much: ask, with buttons.
+    if ["set volume", "set the volume", "change volume", "change the volume", "adjust volume", "adjust the volume", "volume"].contains(&rules::normalize(text).as_str()) {
+        let choices = [25, 50, 75, 100].iter().map(|v| Choice { label: format!("{v}%"), request: format!("volume {v}") }).collect();
+        return Reply { choices, ..reply("What volume?", "speaking") };
+    }
     // 21b: work on files, code and commands goes to the work loop, on the cloud AI when it's in
     // use, else (21c) the model on this PC when it's set up (what the rules do with only the
     // work tools, like "run python3 hello.py", stays with them).
-    let brain = super::cloud::active().map(agent::Brain::Cloud).or_else(|| super::local::ready().then_some(agent::Brain::Local));
+    // 21f: what's in your windows stays on this PC: a request the rules read a window for runs
+    // with them (no AI), and a task about a window's contents ("summarize this page") goes only
+    // to the model on this PC, never to the cloud AI.
+    let reads_window = matches!(&parsed, Parsed::Steps(s) if s.iter().any(|s| s.tool == "read_window"));
+    let brain = if reads_window {
+        None
+    } else if agent::about_window(&rules::normalize(text)) {
+        super::local::ready().then_some(agent::Brain::Local)
+    } else {
+        super::cloud::active().map(agent::Brain::Cloud).or_else(|| super::local::ready().then_some(agent::Brain::Local))
+    };
     if let Some(brain) = brain {
-        let work = agent::is_work(&rules::normalize(text))
+        let mut work = agent::is_work(&rules::normalize(text))
             && match &parsed {
                 Parsed::Steps(s) => !s.iter().all(|s| super::tools::WORK.contains(&s.tool)),
                 Parsed::Unknown(_) => true,
                 _ => false,
             };
+        // 21e: with the cloud AI, also what the rules can't do whole (from Siva's log, 2026-10-27):
+        // a part they don't know ("search flipkart and open the first result"), or an app that
+        // isn't here ("open google news and read the headlines"). Talk stays talk. The model on
+        // this PC is too slow for these.
+        if !work && !brain.is_local() {
+            work = match &parsed {
+                Parsed::Unknown(_) => super::model::about_desktop(text) && !rules::is_remark(text),
+                Parsed::Steps(s) => s.iter().any(|s| s.tool == "open_app" && !app_known(app, s.args["app"].as_str().unwrap_or(""))),
+                _ => false,
+            };
+        }
         if work {
             return work_on(app, brain, text).await;
         }

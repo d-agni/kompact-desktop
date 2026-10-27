@@ -274,7 +274,8 @@ while :; do
   cmd=$(cat "$dir/cmd-$id" 2>/dev/null) || continue
   cd "$(cat "$dir/cwd-$id" 2>/dev/null)" 2>/dev/null || cd ~
   printf '\n\033[1;35msiva\033[0m \033[34m%s\033[0m $ %s\n' "${PWD/#$HOME/\~}" "$cmd"
-  SHELL=/bin/bash script -qefc "$cmd" "$dir/out-$id"
+  # 21e: and the folder it ended in, for the next command ("cd ~/Documents" lasts).
+  SHELL=/bin/bash script -qefc "$cmd"$'\n'"__s=\$?; pwd > '$dir/pwd-$id'; exit \$__s" "$dir/out-$id"
   echo $? > "$dir/done-$id.part" && mv "$dir/done-$id.part" "$dir/done-$id"
   printf '\033]0;Siva\007'
 done
@@ -385,6 +386,15 @@ pub struct Ran {
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// 21e: the folder Siva's terminal is in after its last command (`cd` lasts between them).
+static FOLDER: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Where the next command runs when none is named: where the last one ended, if it's still
+/// there.
+pub fn folder_now() -> Option<PathBuf> {
+    FOLDER.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|p| p.is_dir())
+}
+
 /// Run `cmd` in `folder` in Siva's terminal and wait for it (blocking; `stop` is asked every
 /// tenth of a second, and `WAIT` at most).
 pub fn run(cmd: &str, folder: &Path, stop: impl Fn() -> bool) -> Result<Ran, String> {
@@ -420,6 +430,11 @@ pub fn run(cmd: &str, folder: &Path, stop: impl Fn() -> bool) -> Result<Ran, Str
     loop {
         if let Ok(code) = std::fs::read_to_string(&done) {
             let output = clean_output(&std::fs::read(&out).unwrap_or_default());
+            let pwd = dir.join(format!("pwd-{id}"));
+            if let Some(p) = std::fs::read_to_string(&pwd).ok().map(|p| PathBuf::from(p.trim_end_matches('\n'))).filter(|p| p.is_absolute()) {
+                *FOLDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
+            }
+            let _ = std::fs::remove_file(pwd);
             cleanup(true);
             let exit = code.trim().parse().ok();
             info!("work: the command ended ({exit:?}) after {} ms", started.elapsed().as_millis());

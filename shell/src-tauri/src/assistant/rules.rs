@@ -434,6 +434,48 @@ fn weather_clause(c: &str, w: &[&str]) -> Option<Step> {
     Some(step("weather", Value::Object(args)))
 }
 
+/// 21f: a page read out, on this PC (no AI): "read the headlines on the page", "read the
+/// headlines the page" (as heard), "read the headlines in firefox", "read this page aloud",
+/// "read the article". Normalized words. Plain "read the headlines" is the news (`news_clause`).
+fn page_clause(c: &str) -> Option<Step> {
+    const PLACES: [&str; 14] = ["page", "this page", "that page", "the page", "the site", "this site", "the website", "this website", "the screen", "my screen", "the tab", "this tab", "the browser", "it"];
+    const BROWSERS: [&str; 6] = ["firefox", "chrome", "chromium", "brave", "browser", "the browser"];
+    let mut t = c.trim().strip_prefix("please ").unwrap_or(c.trim());
+    for end in [" please", " aloud", " out loud", " for me", " to me"] {
+        t = t.strip_suffix(end).unwrap_or(t);
+    }
+    const HEADLINES: [&str; 16] = [
+        "read out the headlines", "read me the headlines", "read the news headlines", "read all the headlines", "read the headlines", "read headlines", "tell me the headlines", "what are the headlines",
+        "whats the headlines", "read the top headlines", "read all the stories", "read the stories", "read me the stories", "read the top stories", "read all the news", "read the news",
+    ];
+    // "read all the stories": the page just opened ("open google news and read all the
+    // stories"); alone, the page in front.
+    if ["read all the stories", "read the stories", "read me the stories", "read the top stories", "read all stories"].contains(&t) {
+        return Some(step("read_window", json!({"what": "headlines"})));
+    }
+    if let Some(rest) = HEADLINES.iter().find_map(|p| t.strip_prefix(p)) {
+        let rest = rest.trim();
+        let rest = ["on ", "of ", "from ", "in ", "at "].iter().find_map(|p| rest.strip_prefix(p)).unwrap_or(rest).trim();
+        if PLACES.contains(&rest) {
+            return Some(step("read_window", json!({"what": "headlines"})));
+        }
+        if BROWSERS.contains(&rest) {
+            return Some(step("read_window", json!({"window": rest.trim_start_matches("the "), "what": "headlines"})));
+        }
+        return None;
+    }
+    const PAGE: [&str; 12] = [
+        "read the page", "read this page", "read out the page", "read the whole page", "read the article", "read this article", "read the web page", "read this web page", "read whats on the page",
+        "read what is on the page", "read the page out", "read out this page",
+    ];
+    if PAGE.contains(&t) {
+        return Some(step("read_window", json!({"what": "page"})));
+    }
+    // "read the page in firefox"
+    let (page, app) = t.split_once(" in ")?;
+    (PAGE.contains(&page) && BROWSERS.contains(&app)).then(|| step("read_window", json!({"window": app.trim_start_matches("the "), "what": "page"})))
+}
+
 /// "news", "the headlines", "news about cricket", "tech news", "whats happening in tamil nadu",
 /// "latest on the election".
 fn news_clause(c: &str, w: &[&str]) -> Option<Step> {
@@ -701,15 +743,70 @@ fn work(raw: &str) -> Option<Step> {
             cmd.pop();
         }
         // Said aloud: "python3 hello dot py".
-        let cmd = unquote(&cmd.replace(" dot ", "."));
+        let mut cmd = unquote(&cmd.replace(" dot ", "."));
+        // 21e: "ls in ~", "ls in my documents folder": where, not part of the command (from
+        // Siva's log: it ran `ls in ~`).
+        let mut folder = None;
+        if let Some(i) = cmd.to_ascii_lowercase().rfind(" in ") {
+            let place = cmd[i + 4..].trim();
+            let p = place.to_ascii_lowercase();
+            let folderish = place.starts_with('~') || place.starts_with('/') || p.ends_with(" folder") || p.ends_with(" directory") || ["home", "my home", "documents", "downloads", "desktop", "pictures", "music", "videos"].contains(&p.trim_start_matches("my ").trim_start_matches("the "));
+            if folderish && !place.contains(['|', '&', ';', '>', '"', '\'']) {
+                folder = Some(folder_name(place).unwrap_or_else(|| "~".into()));
+                cmd.truncate(i);
+            }
+        }
+        // "run ls command": the word "command" after the program isn't the command's.
+        let words: Vec<&str> = cmd.split_whitespace().collect();
+        if words.len() == 2 && words[1].eq_ignore_ascii_case("command") {
+            cmd = words[0].to_string();
+        }
         if !cmd.is_empty() && (!plain || looks_like_command(&cmd)) {
-            return Some(step("run_command", json!({"command": cmd})));
+            let mut args = json!({"command": cmd});
+            if let Some(f) = folder {
+                args["folder"] = json!(f);
+            }
+            return Some(step("run_command", args));
         }
     }
     // Reading a file.
     if let Some(rest) = after_lead(t, &["read the file ", "read file ", "show me the file ", "show the file ", "show file ", "what's in the file ", "what is in the file ", "print the file "]) {
         let name = spoken_file_name(&unquote(rest.trim_end_matches(['.', '?'])));
         return (!name.is_empty()).then(|| step("read_file", json!({"path": name})));
+    }
+    // 21f: a page read out ("read this page", "read the headlines on the page").
+    if let Some(s) = page_clause(&normalize(t)) {
+        return Some(s);
+    }
+    // 21d: what's in a window.
+    let lower = t.to_ascii_lowercase();
+    let lower = lower.trim_end_matches(['.', '?', '!']);
+    for (lead, window) in [
+        ("read this window", None),
+        ("read the window", None),
+        ("read the screen", None),
+        ("read my screen", None),
+        ("what's on the screen", None),
+        ("what is on the screen", None),
+        ("what's on my screen", None),
+        ("what is on my screen", None),
+        ("what's in this window", None),
+        ("what is in this window", None),
+        ("what does this window say", None),
+        ("what does the page say", None),
+    ] {
+        if lower == lead {
+            return Some(step("read_window", window.map(|w: &str| json!({"window": w})).unwrap_or(json!({}))));
+        }
+    }
+    // "what does the terminal say", "read firefox", "read the text editor window".
+    if let Some(app) = lower.strip_prefix("what does ").and_then(|r| r.strip_suffix(" say")).or_else(|| lower.strip_prefix("read ").filter(|r| r.ends_with(" window") || !r.contains(' ') || r.starts_with("the "))) {
+        let app = app.trim_start_matches("the ").trim_end_matches(" window").trim();
+        // Not a window: "read the headlines" is the news, "read the page" a page (21f).
+        let not_window = ["headlines", "headline", "news", "page", "article", "weather", "top"].contains(&app.split_whitespace().next().unwrap_or(""));
+        if !app.is_empty() && !not_window && !["file", "it", "this", "that", "me", "my", "aloud"].contains(&app) && !app.contains('.') {
+            return Some(step("read_window", json!({"window": app})));
+        }
     }
     // A folder's files.
     if let Some(rest) = after_lead(t, &["list the files in ", "list files in ", "what files are in ", "what files are there in ", "show the files in ", "list the files", "list files", "what files are there", "what files do i have"]) {
@@ -843,6 +940,10 @@ fn clause(c: &str) -> Option<Vec<Step>> {
     // settings" isn't Bluetooth on, "move the dock to the left" isn't a window).
     if let Some(s) = desktop_clause(c, &w) {
         return Some(s);
+    }
+    // 21f: a page read out, before "the headlines" is the news.
+    if let Some(s) = page_clause(c) {
+        return Some(vec![s]);
     }
     // 20d: online (after the desktop's own words: "open the network settings" isn't news).
     if let Some(s) = place_clause(c).or_else(|| weather_clause(c, &w)).or_else(|| news_clause(c, &w)) {
@@ -1140,6 +1241,10 @@ pub fn describe(s: &Step) -> String {
         "run_command" => format!("Run “{}”", text("command")),
         "write_file" => format!("Write the file {}", text("path")),
         "read_file" => format!("Read the file {}", text("path")),
+        "read_window" if text("what") == "headlines" => "Read the headlines".into(),
+        "read_window" if text("what") == "page" => "Read the page".into(),
+        "read_window" if text("window").is_empty() => "Read the window in front".into(),
+        "read_window" => format!("Read {}", text("window")),
         "list_files" if text("folder").is_empty() => "List the files in your home folder".into(),
         "list_files" => format!("List the files in {}", text("folder")),
         "type_text" | "write_text" | "press_keys" | "save_as" => {
@@ -1254,6 +1359,16 @@ fn distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
+/// 21f: names whisper mishears often, put right (from Siva's log, 2026-10-27: "open google
+/// mute in firefox", "open google use"). Normalized words.
+fn heard_right(c: &str) -> String {
+    let mut t = format!(" {c} ");
+    for wrong in ["google mute", "google use", "google muse", "google knows", "google nudes", "google new", "google mews"] {
+        t = t.replace(&format!(" {wrong} "), " google news ");
+    }
+    t.trim().to_string()
+}
+
 /// `text` with each word of 5 letters or more that is a near miss of exactly one command word
 /// put right (1 letter off for 5, 2 for longer).
 fn corrected(text: &str) -> String {
@@ -1279,7 +1394,7 @@ pub fn parse(text: &str) -> Parsed {
     // Commas and semicolons separate requests too: mark them before punctuation goes.
     let marked = glued.replace([',', ';'], " and ");
     // "date and time" is one thing (the pane), not two requests.
-    let c = normalize(&marked).replace("date and time", "datetime");
+    let c = heard_right(&normalize(&marked).replace("date and time", "datetime"));
     if c.is_empty() {
         return Parsed::Unknown(String::new());
     }
@@ -1340,6 +1455,16 @@ pub fn parse(text: &str) -> Parsed {
         }
     }
     resolve_it(&mut steps);
+    // 21f: "open google news and read the headlines": the headlines on the page just opened, not
+    // the news looked up.
+    for i in 1..steps.len() {
+        let browsed = steps[..i].iter().any(|s| matches!(s.tool, "open_link" | "search_web") || (s.tool == "open_app" && s.args["app"].as_str().and_then(super::browser::site_for).is_some()));
+        if browsed && steps[i].tool == "news" && steps[i].args.get("topic").is_none() {
+            steps[i] = step("read_window", json!({"what": "headlines"}));
+        }
+    }
+    // 21e: the same look twice in a row ("open news and read the headlines": news, news) once.
+    steps.dedup_by(|b, a| a.tool == b.tool && a.args == b.args && super::tools::find(a.tool).is_some_and(|t| t.tier == super::tools::Tier::Read));
     if steps.is_empty() {
         Parsed::Unknown(c)
     } else {
@@ -1356,7 +1481,7 @@ pub fn clauses(text: &str) -> Option<Vec<Result<Vec<Step>, String>>> {
     }
     let lower = text.to_lowercase();
     let glued = [", which", ", that is", ", the one"].iter().fold(lower, |t, c| t.replace(c, &c[1..]));
-    let c = normalize(&glued.replace([',', ';'], " and ")).replace("date and time", "datetime");
+    let c = heard_right(&normalize(&glued.replace([',', ';'], " and ")).replace("date and time", "datetime"));
     let parts: Vec<Result<Vec<Step>, String>> = split(&c).into_iter().map(|p| clause(&p).ok_or(p)).collect();
     (!parts.is_empty()).then_some(parts)
 }
@@ -1577,6 +1702,13 @@ mod tests {
         assert_eq!(steps("run the command cowsay hi"), [r#"run_command {"command":"cowsay hi"}"#], "said it's a command");
         assert_eq!(steps("run ./build.sh"), [r#"run_command {"command":"./build.sh"}"#]);
         assert_eq!(steps("execute git status"), [r#"run_command {"command":"git status"}"#]);
+        // 21e: from Siva's log (2026-10-27).
+        assert_eq!(steps("run ls command in ~"), [r#"run_command {"command":"ls","folder":"~"}"#]);
+        assert_eq!(steps("Run ls in ~"), [r#"run_command {"command":"ls","folder":"~"}"#]);
+        assert_eq!(steps("run ls -la in my documents folder"), [r#"run_command {"command":"ls -la","folder":"Documents"}"#]);
+        assert_eq!(steps("run grep -r todo in ~/code"), [r#"run_command {"command":"grep -r todo","folder":"~/code"}"#]);
+        assert_eq!(steps("run echo stay in touch"), [r#"run_command {"command":"echo stay in touch"}"#], "not a folder");
+        assert_eq!(steps("open news and read the headlines"), [r#"news {}"#], "once");
         // Apps stay apps.
         assert_eq!(steps("run firefox"), [r#"open_app {"app":"firefox"}"#]);
         assert_eq!(steps("run files"), [r#"open_app {"app":"files"}"#]);
@@ -1590,6 +1722,30 @@ mod tests {
         assert_eq!(steps("list files"), [r#"list_files {}"#]);
         assert_eq!(steps("what files are in ~/code?"), [r#"list_files {"folder":"~/code"}"#]);
         assert_eq!(steps("list the files in my home folder"), [r#"list_files {}"#]);
+        // 21d: what's in a window.
+        assert_eq!(steps("read this window"), [r#"read_window {}"#]);
+        assert_eq!(steps("What's on the screen?"), [r#"read_window {}"#]);
+        assert_eq!(steps("what does the terminal say"), [r#"read_window {"window":"terminal"}"#]);
+        assert_eq!(steps("read firefox"), [r#"read_window {"window":"firefox"}"#]);
+        assert_eq!(steps("read the text editor window"), [r#"read_window {"window":"text editor"}"#]);
+        assert_eq!(steps("read the file notes.txt"), [r#"read_file {"path":"notes.txt"}"#], "a file stays a file");
+        // 21f: pages read out on this PC (from Siva's log, 2026-10-27).
+        assert_eq!(steps("Open google news and read the headlines the page"), [r#"open_app {"app":"google news"}"#, r#"read_window {"what":"headlines"}"#]);
+        assert_eq!(steps("open google news and read the headlines"), [r#"open_app {"app":"google news"}"#, r#"read_window {"what":"headlines"}"#]);
+        assert_eq!(steps("go to bbc.com and read the headlines"), [r#"open_link {"url":"bbc.com"}"#, r#"read_window {"what":"headlines"}"#]);
+        assert_eq!(steps("read the headlines on this page"), [r#"read_window {"what":"headlines"}"#]);
+        assert_eq!(steps("Read the headlines in Firefox."), [r#"read_window {"what":"headlines","window":"firefox"}"#]);
+        assert_eq!(steps("read this page aloud"), [r#"read_window {"what":"page"}"#]);
+        assert_eq!(steps("read the page"), [r#"read_window {"what":"page"}"#]);
+        assert_eq!(steps("read the article in firefox"), [r#"read_window {"what":"page","window":"firefox"}"#]);
+        assert_eq!(steps("read the headlines"), [r#"news {}"#], "the news, looked up");
+        assert_eq!(steps("read the headlines about cricket"), [r#"news {"topic":"cricket"}"#]);
+        assert_eq!(steps("Open Google News in Firefox and read the headlines"), [r#"open_app {"app":"google news in firefox"}"#, r#"read_window {"what":"headlines"}"#]);
+        assert_eq!(steps("Open Google News and read all the stories"), [r#"open_app {"app":"google news"}"#, r#"read_window {"what":"headlines"}"#]);
+        assert_eq!(steps("Open Google mute in Firefox and read all the stories"), [r#"open_app {"app":"google news in firefox"}"#, r#"read_window {"what":"headlines"}"#], "misheard");
+        assert_eq!(steps("Open Google use"), [r#"open_app {"app":"google news"}"#]);
+        assert_eq!(steps("read the news on this page"), [r#"read_window {"what":"headlines"}"#]);
+        assert_eq!(steps("read the news"), [r#"news {}"#], "the news, looked up");
     }
 
     #[test]

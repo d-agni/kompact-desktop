@@ -135,6 +135,8 @@ pub const TOOLS: &[Tool] = &[
     // Outside your home folder, hidden files and drastic commands ask first (`work.rs`).
     Tool { name: "read_file", about: "Read a text file.", tier: Tier::Read, undo: false, params: &[p("path", Arg::Text { max: 300 }, "e.g. notes.txt or ~/code/main.py")] },
     Tool { name: "list_files", about: "List the files in a folder.", tier: Tier::Read, undo: false, params: &[opt("folder", Arg::Text { max: 300 }, "your home folder if left out")] },
+    // 21d: what's inside a window (accessibility), as an outline; never a password field.
+    Tool { name: "read_window", about: "Read what's in a window: its text, fields, buttons and links (a web page, a document, a terminal).", tier: Tier::Read, undo: false, params: &[opt("window", WINDOW, "the window in front if left out"), opt("what", Arg::OneOf(&["headlines", "page"]), "read out its headlines or its page's text; an outline if left out")] },
     Tool { name: "write_file", about: "Write a text file (made if new, replaced if there), e.g. a program.", tier: Tier::Reversible, undo: true, params: &[p("path", Arg::Text { max: 300 }, "e.g. hello.py"), p("content", Arg::Body { max: 20_000 }, "the whole file")] },
     Tool { name: "run_command", about: "Run a command in Siva's terminal, where the user sees it, and get its output.", tier: Tier::Reversible, undo: false, params: &[p("command", Arg::Body { max: 2_000 }, "e.g. python3 hello.py"), opt("folder", Arg::Text { max: 300 }, "your home folder if left out")] },
     // ---- Tier 2: consequential, asks every time ----
@@ -147,7 +149,7 @@ pub const TOOLS: &[Tool] = &[
 
 /// 21a: the tools for real work, not given to the small model on this PC (it can't use them
 /// safely; 21b/21c give them to a model that plans).
-pub const WORK: [&str; 4] = ["read_file", "list_files", "write_file", "run_command"];
+pub const WORK: [&str; 5] = ["read_file", "list_files", "write_file", "run_command", "read_window"];
 
 /// The tools the small model on this PC is told about.
 pub fn for_small_model() -> impl Iterator<Item = &'static Tool> {
@@ -284,7 +286,7 @@ mod tests {
         for word in ["password", "sudo", "shell", "delete", "install", "display", "polkit", "send", "email"] {
             assert!(TOOLS.iter().all(|t| !t.name.contains(word)), "a tool named after {word}");
         }
-        for word in ["command", "file"] {
+        for word in ["command", "file", "read_window"] {
             assert!(TOOLS.iter().filter(|t| t.name.contains(word)).all(|t| WORK.contains(&t.name)), "{word}");
         }
         // The ones that lose work or end the session ask first.

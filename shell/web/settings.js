@@ -1128,6 +1128,15 @@ try {
 } catch {
   // A private window: the first tab.
 }
+// 21d: Read inside apps.
+void asCall("read_apps_state").then((on) => {
+  /** @type {HTMLInputElement} */ ($("as-read-apps")).checked = on !== false;
+});
+$("as-read-apps").addEventListener("change", async (e) => {
+  const box = /** @type {HTMLInputElement} */ (e.target);
+  const on = await asCall("set_read_apps", { on: box.checked });
+  if (on == null) box.checked = !box.checked;
+});
 $("as-hearing").addEventListener("change", async (e) => {
   const st = await asCall("set_hearing", { hearing: /** @type {HTMLSelectElement} */ (e.target).value });
   if (st) voice = st;
