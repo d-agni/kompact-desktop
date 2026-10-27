@@ -534,6 +534,9 @@ impl Kompact {
         if std::env::var("KOMPACT_SCREENSHOT_DIR").is_ok_and(|d| !d.trim().is_empty()) {
             locked.push("shots-dir");
         }
+        if std::env::var("KOMPACT_VIRTUAL_DISPLAYS").is_ok() {
+            locked.push("virtual-displays");
+        }
         let shots = crate::screenshot::current_dir(shown.shots_dir.as_deref()).map(|d| d.display().to_string()).unwrap_or_default();
         self.ipc.broadcast(&shown.to_json(&locked, message, !titlebar::style().light, &shots, &self.terminal_cmd));
     }
@@ -1761,6 +1764,7 @@ impl Kompact {
                     rect: (g.loc.x, g.loc.y, g.size.w, g.size.h),
                     refresh_mhz: o.current_mode().map_or(0, |m| m.refresh),
                     mm: (mm.w, mm.h),
+                    virtual_sizes: self.virtual_sizes.iter().find(|(n, _)| *n == o.name()).map(|(_, s)| s.clone()),
                 })
             })
             .collect();

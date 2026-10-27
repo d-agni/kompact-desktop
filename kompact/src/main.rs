@@ -40,6 +40,7 @@ mod title_text;
 mod titlebar;
 mod typing;
 mod uploads;
+mod virtual_display;
 mod vt;
 mod workspace;
 

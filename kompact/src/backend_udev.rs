@@ -18,10 +18,19 @@
 //! connector (the primary, 5e), no udev watching, any DRM error fatal. `observe` adds a udev watch that only logs
 //! connectors; `reconnect` and `all` set outputs up and shut them down on hotplug events (never
 //! in a loop: a connector whose output failed isn't retried until the next hotplug event).
+//!
+//! Phase 22: virtual displays (`virtual_display.rs`). Another DRM device on the seat whose
+//! driver is VKMS (plugged in by apps like demirror) becomes an output: opened through libseat
+//! as its own device, its area drawn off screen by the GT 710 and copied into its dumb buffers,
+//! flipped with plain KMS calls on its own fd. Kept apart from `heads`: nothing for it touches
+//! the GT 710's KMS state, and any error on it only shuts that output down. Only with udev
+//! watching (not `KOMPACT_OUTPUTS=first`); Settings → Displays or `KOMPACT_VIRTUAL_DISPLAYS=off`
+//! turns it off.
 
 use std::{
     cell::RefCell,
-    path::PathBuf,
+    os::fd::OwnedFd,
+    path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -39,7 +48,7 @@ use smithay::{
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::gles::GlesRenderer,
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{primary_gpu, UdevBackend, UdevEvent},
     },
@@ -47,11 +56,16 @@ use smithay::{
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
+            generic::Generic,
             timer::{TimeoutAction, Timer},
-            EventLoop,
+            EventLoop, Interest, LoopHandle, Mode as LoopMode, PostAction, RegistrationToken,
         },
+        drm::buffer::Buffer as _,
         drm::Device as DrmControlDevice,
-        drm::control::{connector, crtc, Device as ControlDevice, Mode, ModeTypeFlags},
+        drm::control::{
+            connector, crtc, dumbbuffer::DumbBuffer, framebuffer, Device as ControlDevice, Event as KmsEvent, Mode,
+            ModeTypeFlags, PageFlipFlags,
+        },
         input::Libinput,
         rustix::fs::OFlags,
         wayland_server::{backend::GlobalId, Display},
@@ -63,6 +77,7 @@ use crate::{
     outputs::{self, Mode as OutputsMode},
     render::KompactElement,
     state::{ClientState, Kompact},
+    virtual_display::{self, Pacer, Swap},
     Ctx,
 };
 
@@ -89,6 +104,63 @@ struct Head {
     screen_off: bool,
 }
 
+/// 22b: a virtual display kompact drives (`virtual_display.rs`). Apart from `heads`: nothing
+/// here touches the GT 710's KMS state, and an error only shuts this output down.
+struct VirtualHead {
+    device_id: libc::dev_t,
+    /// What libseat opened; handed back to `session.close` when the display goes, so the
+    /// device can be opened again when it comes back.
+    seat_fd: Option<OwnedFd>,
+    /// The same open device (a `try_clone` of `seat_fd`) for the KMS calls.
+    fd: DrmDeviceFd,
+    /// Its page-flip events (a `Generic` source on `fd`).
+    token: Option<RegistrationToken>,
+    connector: connector::Handle,
+    crtc: crtc::Handle,
+    modes: Vec<Mode>,
+    preferred: usize,
+    mode_index: usize,
+    /// Two dumb buffers and their framebuffers (`Swap` picks one).
+    buffers: Vec<(DumbBuffer, framebuffer::Handle)>,
+    output: Output,
+    global: GlobalId,
+    swap: Swap,
+    pacer: Pacer,
+    /// Only to find out whether anything on it changed (`damage_output`, nothing drawn).
+    damage: OutputDamageTracker,
+    /// Frames are being refused (said once in the log, and again when they're shown).
+    refused: bool,
+    /// 22d: the mode hint file for this device (`virtual_display::MODE_HINT_DIR`), the size
+    /// it last said, and when it was read (again at most once a second).
+    hint_path: Option<PathBuf>,
+    hint: Option<(u32, u32)>,
+    hint_read: Instant,
+}
+
+impl VirtualHead {
+    fn sizes(&self) -> Vec<(u32, u32)> {
+        mode_sizes(&self.modes)
+    }
+}
+
+/// 22b: a DRM device on the seat other than the one kompact runs on.
+struct OtherDevice {
+    device_id: libc::dev_t,
+    path: PathBuf,
+    kind: DeviceKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceKind {
+    /// Not looked at yet (or to be looked at again): opened when virtual displays are wanted.
+    Unknown,
+    Virtual,
+    /// Another GPU: not used, as before Phase 22.
+    NotVirtual,
+    /// Setting it up failed: not tried again until a udev event for it or a settings change.
+    Failed,
+}
+
 struct DrmBackend {
     renderer: GlesRenderer,
     manager: GbmOutputManager,
@@ -106,6 +178,13 @@ struct DrmBackend {
     screen_off_allowed: bool,
     /// No drawing between our own `change_vt` and the seat's answer (`vt.rs`).
     vt_gate: crate::vt::SwitchGate,
+    /// 22b: the virtual displays driven, and the other DRM devices seen on the seat.
+    virtuals: Vec<VirtualHead>,
+    others: Vec<OtherDevice>,
+    /// 22b: `KOMPACT_VIRTUAL_DISPLAYS`, if set (wins over Settings).
+    virtual_env: Option<bool>,
+    /// 22b: whether virtual displays were wanted last turn (a change retries failed devices).
+    virtual_wanted: bool,
 }
 
 /// Render one head. Unchanged from the single-output backend apart from `head`/`timed`.
@@ -260,7 +339,9 @@ impl DrmBackend {
     fn geometries(&self, state: &Kompact) -> Vec<(Output, Rectangle<i32, Logical>)> {
         self.heads
             .iter()
-            .filter_map(|h| Some((h.output.clone(), state.space.output_geometry(&h.output)?)))
+            .map(|h| &h.output)
+            .chain(self.virtuals.iter().map(|v| &v.output))
+            .filter_map(|o| Some((o.clone(), state.space.output_geometry(o)?)))
             .collect()
     }
 
@@ -387,17 +468,7 @@ impl DrmBackend {
         let Some(i) = self.heads.iter().position(|h| u32::from(h.connector) == connector_id) else { return };
         let head = self.heads.remove(i);
         let name = head.output.name();
-        // Panels etc. on it are asked to close; they can come back on another output.
-        {
-            let mut map = layer_map_for_output(&head.output);
-            let layers: Vec<_> = map.layers().cloned().collect();
-            for layer in layers {
-                layer.layer_surface().send_close();
-                map.unmap_layer(&layer);
-            }
-        }
-        state.space.unmap_output(&head.output);
-        state.display_handle.remove_global::<Kompact>(head.global);
+        release_output(&head.output, head.global, state);
         // Dropping the DrmOutput turns its CRTC off (Smithay's surface disables the connectors
         // and does a null commit).
         drop(head.drm);
@@ -407,16 +478,22 @@ impl DrmBackend {
     /// Put the outputs side by side in connector order, tell the shell where things went.
     fn relayout(&mut self, state: &mut Kompact, before: Vec<(Output, Rectangle<i32, Logical>)>) {
         self.heads.sort_by_key(|h| u32::from(h.connector));
-        let sizes: Vec<Size<i32, Logical>> = self
+        // 22b: the monitors, then the virtual displays to their right.
+        let placed: Vec<(&Output, &Mode)> = self
             .heads
             .iter()
-            .map(|h| Size::from((h.mode.size().0 as i32, h.mode.size().1 as i32)))
+            .map(|h| (&h.output, &h.mode))
+            .chain(self.virtuals.iter().map(|v| (&v.output, &v.modes[v.mode_index])))
             .collect();
-        for (h, pos) in self.heads.iter().zip(outputs::layout(&sizes)) {
-            h.output.change_current_state(None, None, None, Some(pos));
-            state.space.map_output(&h.output, pos);
+        let sizes: Vec<Size<i32, Logical>> =
+            placed.iter().map(|(_, m)| Size::from((m.size().0 as i32, m.size().1 as i32))).collect();
+        for ((output, _), pos) in placed.iter().zip(outputs::layout(&sizes)) {
+            output.change_current_state(None, None, None, Some(pos));
+            state.space.map_output(output, pos);
         }
-        state.outputs = self.heads.iter().map(|h| h.output.clone()).collect();
+        state.outputs = placed.iter().map(|(o, _)| (*o).clone()).collect();
+        state.virtual_sizes =
+            self.virtuals.iter().map(|v| (v.output.name(), virtual_display::offered_sizes(&v.sizes()))).collect();
         let moves: Vec<_> = before
             .iter()
             .map(|(o, old)| (*old, state.outputs.contains(o).then(|| state.space.output_geometry(o)).flatten()))
@@ -434,16 +511,480 @@ impl DrmBackend {
         if let Some(h) = self.heads.iter().find(|h| h.connector == self.primary) {
             timer.set_refresh_mhz((h.mode.vrefresh() * 1000) as i32);
         }
-        let layout: Vec<String> = self
-            .heads
+        let layout: Vec<String> = state
+            .outputs
             .iter()
-            .filter_map(|h| Some(format!("{} at {:?}", h.output.name(), state.space.output_geometry(&h.output)?)))
+            .filter_map(|o| Some(format!("{} at {:?}", o.name(), state.space.output_geometry(o)?)))
             .collect();
         if layout.is_empty() {
             tracing::warn!("no outputs left; windows keep their places until a monitor is connected");
         } else {
             tracing::info!("output layout: {}", layout.join(", "));
         }
+    }
+}
+
+// ---- 22b: virtual displays (`virtual_display.rs`) ----------------------------------------
+// Everything below works on a virtual device's own fd. None of it touches `manager` (the
+// GT 710) apart from drawing off screen with its renderer, as screenshots do.
+
+/// Take an output out of use: panels etc. on it are asked to close (they can come back on
+/// another output), it's unmapped, its global removed.
+fn release_output(output: &Output, global: GlobalId, state: &mut Kompact) {
+    {
+        let mut map = layer_map_for_output(output);
+        let layers: Vec<_> = map.layers().cloned().collect();
+        for layer in layers {
+            layer.layer_surface().send_close();
+            map.unmap_layer(&layer);
+        }
+    }
+    state.space.unmap_output(output);
+    state.display_handle.remove_global::<Kompact>(global);
+}
+
+fn output_mode(mode: &Mode) -> OutputMode {
+    let (w, h) = mode.size();
+    OutputMode { size: (w as i32, h as i32).into(), refresh: (mode.vrefresh() * 1000) as i32 }
+}
+
+fn mode_sizes(modes: &[Mode]) -> Vec<(u32, u32)> {
+    modes.iter().map(|m| (m.size().0 as u32, m.size().1 as u32)).collect()
+}
+
+/// 22d: `<MODE_HINT_DIR>/<device name>`, the name sysfs gives the DRM device (VKMS: its
+/// configfs directory's).
+fn mode_hint_path(device_id: libc::dev_t) -> Option<PathBuf> {
+    let sys = format!("/sys/dev/char/{}:{}/device", libc::major(device_id), libc::minor(device_id));
+    let name = std::fs::read_link(sys).ok()?.file_name()?.to_owned();
+    Some(Path::new(virtual_display::MODE_HINT_DIR).join(name))
+}
+
+fn read_mode_hint(path: &Path) -> Option<(u32, u32)> {
+    virtual_display::parse_hint(&std::fs::read_to_string(path).ok()?)
+}
+
+/// Two XRGB8888 dumb buffers with framebuffers, the size of `mode`.
+fn virtual_buffers(fd: &DrmDeviceFd, mode: &Mode) -> anyhow::Result<Vec<(DumbBuffer, framebuffer::Handle)>> {
+    let (w, h) = mode.size();
+    let mut buffers = Vec::new();
+    for _ in 0..2 {
+        let made = fd.create_dumb_buffer((w as u32, h as u32), Fourcc::Xrgb8888, 32).and_then(|buffer| {
+            match fd.add_framebuffer(&buffer, 24, 32) {
+                Ok(fb) => Ok((buffer, fb)),
+                Err(e) => {
+                    let _ = fd.destroy_dumb_buffer(buffer);
+                    Err(e)
+                }
+            }
+        });
+        match made {
+            Ok(pair) => buffers.push(pair),
+            Err(e) => {
+                free_buffers(fd, buffers);
+                anyhow::bail!("dumb buffer {w}x{h}: {e}");
+            }
+        }
+    }
+    Ok(buffers)
+}
+
+fn free_buffers(fd: &DrmDeviceFd, buffers: Vec<(DumbBuffer, framebuffer::Handle)>) {
+    for (buffer, fb) in buffers {
+        let _ = fd.destroy_framebuffer(fb);
+        let _ = fd.destroy_dumb_buffer(buffer);
+    }
+}
+
+/// A KMS error worth waiting out rather than shutting the display down: busy (a flip still
+/// pending), no permission (the seat was taken: VT switch), interrupted.
+fn transient(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::EBUSY | libc::EACCES | libc::EPERM | libc::EINTR | libc::EAGAIN))
+}
+
+impl DrmBackend {
+    fn virtual_displays_wanted(&self, state: &Kompact) -> bool {
+        self.virtual_env.unwrap_or(state.prefs.virtual_displays)
+    }
+
+    /// Remember a DRM device the seat has besides ours (startup list, udev `Added`).
+    fn note_device(&mut self, device_id: libc::dev_t, path: PathBuf) {
+        if self.others.iter().any(|d| d.device_id == device_id) {
+            return;
+        }
+        tracing::info!("udev: GPU {path:?} added");
+        self.others.push(OtherDevice { device_id, path, kind: DeviceKind::Unknown });
+    }
+
+    fn set_kind(&mut self, device_id: libc::dev_t, kind: DeviceKind) {
+        if let Some(d) = self.others.iter_mut().find(|d| d.device_id == device_id) {
+            d.kind = kind;
+        }
+    }
+
+    /// Open the device through libseat and, if its driver is VKMS, set it up as an output.
+    /// `Ok(None)`: another GPU, closed again.
+    fn add_virtual(
+        &mut self,
+        session: &mut LibSeatSession,
+        device_id: libc::dev_t,
+        path: &Path,
+        state: &mut Kompact,
+    ) -> anyhow::Result<Option<DrmDeviceFd>> {
+        let seat_fd = session
+            .open(path, OFlags::RDWR | OFlags::CLOEXEC)
+            .map_err(|e| anyhow::anyhow!("opening {path:?} through libseat: {e:?}"))?;
+        let set_up = (|| {
+            let fd = DrmDeviceFd::new(DeviceFd::from(seat_fd.try_clone()?));
+            let driver = fd.get_driver().map(|d| d.name().to_string_lossy().into_owned()).unwrap_or_default();
+            if !virtual_display::is_virtual_driver(&driver) {
+                tracing::info!("udev: GPU {path:?} ({driver}) not used");
+                return Ok(None);
+            }
+            self.setup_virtual(device_id, fd, state).map(Some)
+        })();
+        match set_up {
+            Ok(Some(mut head)) => {
+                let fd = head.fd.clone();
+                head.seat_fd = Some(seat_fd);
+                tracing::info!(
+                    "virtual display {} on {path:?}: {}x{}, {} modes",
+                    head.output.name(),
+                    head.modes[head.mode_index].size().0,
+                    head.modes[head.mode_index].size().1,
+                    head.modes.len()
+                );
+                self.virtuals.push(head);
+                Ok(Some(fd))
+            }
+            Ok(None) => {
+                let _ = session.close(seat_fd);
+                Ok(None)
+            }
+            Err(e) => {
+                let _ = session.close(seat_fd);
+                Err(e)
+            }
+        }
+    }
+
+    fn setup_virtual(&mut self, device_id: libc::dev_t, fd: DrmDeviceFd, state: &mut Kompact) -> anyhow::Result<VirtualHead> {
+        let _ = fd.set_client_capability(smithay::reexports::drm::ClientCapability::UniversalPlanes, true);
+        let entry = scan_connectors(&fd)?
+            .into_iter()
+            .find(|c| c.info.connected && !c.conn.modes().is_empty() && !c.crtcs.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("no connected connector with modes"))?;
+        let modes = entry.conn.modes().to_vec();
+        let preferred = modes.iter().position(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED)).unwrap_or(0);
+        let hint_path = mode_hint_path(device_id);
+        let hint = hint_path.as_deref().and_then(read_mode_hint);
+        let mode_index = virtual_display::pick_mode(&mode_sizes(&modes), preferred, state.prefs.virtual_mode, hint);
+        if let Some((w, h)) = hint {
+            tracing::info!("virtual display: viewed at {w}x{h} (mode hint)");
+        }
+        let mode = modes[mode_index];
+        let buffers = virtual_buffers(&fd, &mode)?;
+        let taken: Vec<String> = state.outputs.iter().map(|o| o.name()).collect();
+        let name = virtual_display::unique_name(&output_name(&entry.conn), &taken);
+        let output = new_output_named(name, &entry.conn, &mode, "virtual");
+        let global = output.create_global::<Kompact>(&state.display_handle);
+        let (w, h) = mode.size();
+        Ok(VirtualHead {
+            device_id,
+            seat_fd: None,
+            fd,
+            token: None,
+            connector: entry.handle,
+            crtc: entry.crtcs[0],
+            modes,
+            preferred,
+            mode_index,
+            buffers,
+            output,
+            global,
+            swap: Swap::default(),
+            pacer: Pacer::new(virtual_display::MAX_FPS),
+            damage: OutputDamageTracker::new((w as i32, h as i32), 1.0, Transform::Normal),
+            refused: false,
+            hint_path,
+            hint,
+            hint_read: Instant::now(),
+        })
+    }
+
+    /// Shut a virtual display down: CRTC off, buffers freed, output released. Returns its
+    /// event source and libseat fd for the caller to remove and close.
+    fn remove_virtual(&mut self, device_id: libc::dev_t, state: &mut Kompact) -> Option<(Option<RegistrationToken>, Option<OwnedFd>)> {
+        let i = self.virtuals.iter().position(|v| v.device_id == device_id)?;
+        let v = self.virtuals.remove(i);
+        let name = v.output.name();
+        let _ = v.fd.set_crtc(v.crtc, None, (0, 0), &[], None);
+        free_buffers(&v.fd, v.buffers);
+        release_output(&v.output, v.global, state);
+        drop(v.fd);
+        tracing::info!("virtual display {name} shut down");
+        Some((v.token, v.seat_fd))
+    }
+
+    /// The kernel's page-flip event for a virtual display.
+    fn virtual_flip_done(&mut self, device_id: libc::dev_t, crtc: crtc::Handle) {
+        if let Some(v) = self.virtuals.iter_mut().find(|v| v.device_id == device_id && v.crtc == crtc) {
+            v.swap.flip_done();
+        }
+    }
+
+    /// Settings → Displays chose another resolution: new buffers, the next frame sets the mode.
+    /// Returns whether any changed (the caller lays the outputs out again).
+    fn apply_virtual_modes(&mut self, state: &Kompact) -> bool {
+        let mut changed = false;
+        let now = Instant::now();
+        for v in &mut self.virtuals {
+            // 22d: the viewer's size may have changed (a phone turned).
+            if now.duration_since(v.hint_read) >= Duration::from_secs(1) {
+                v.hint_read = now;
+                let hint = v.hint_path.as_deref().and_then(read_mode_hint);
+                if hint != v.hint {
+                    if let Some((w, h)) = hint {
+                        tracing::info!("virtual display {}: viewed at {w}x{h} (mode hint)", v.output.name());
+                    }
+                    v.hint = hint;
+                }
+            }
+            let index = virtual_display::pick_mode(&v.sizes(), v.preferred, state.prefs.virtual_mode, v.hint);
+            if index == v.mode_index {
+                continue;
+            }
+            let mode = v.modes[index];
+            match virtual_buffers(&v.fd, &mode) {
+                Ok(buffers) => {
+                    let old = std::mem::replace(&mut v.buffers, buffers);
+                    free_buffers(&v.fd, old);
+                    v.mode_index = index;
+                    let new_mode = output_mode(&mode);
+                    v.output.change_current_state(Some(new_mode), None, None, None);
+                    v.output.set_preferred(new_mode);
+                    v.damage = OutputDamageTracker::new((new_mode.size.w, new_mode.size.h), 1.0, Transform::Normal);
+                    v.swap = Swap::default();
+                    v.pacer.reset();
+                    changed = true;
+                    let why = if state.prefs.virtual_mode.is_some() { "Settings" } else if v.hint.is_some() { "mode hint" } else { "preferred" };
+                    tracing::info!("virtual display {}: {}x{} ({why})", v.output.name(), mode.size().0, mode.size().1);
+                }
+                Err(e) => tracing::warn!("virtual display {}: can't change to {:?}: {e:#}", v.output.name(), mode.size()),
+            }
+        }
+        changed
+    }
+
+    /// Draw the virtual displays that are due (after the monitors' frames are queued). Returns
+    /// the ones that failed, for the caller to shut down.
+    fn render_virtuals(&mut self, state: &Kompact) -> Vec<libc::dev_t> {
+        let now = Instant::now();
+        let mut failed = Vec::new();
+        if !self.active || !self.vt_gate.may_render(now) {
+            return failed;
+        }
+        let DrmBackend { renderer, virtuals, .. } = self;
+        for v in virtuals.iter_mut() {
+            let Some(back) = v.swap.back() else { continue };
+            let (output, damage) = (&v.output, &mut v.damage);
+            let due = v.pacer.due(now, || {
+                let elements = crate::render::build_elements(renderer, state, output);
+                damage.damage_output(1, &elements).map_or(true, |(d, _)| d.is_some_and(|d| !d.is_empty()))
+            });
+            if !due {
+                continue;
+            }
+            match draw_virtual(renderer, state, v, back) {
+                Ok(true) => v.pacer.drawn(now),
+                Ok(false) => v.pacer.missed(now),
+                Err(e) => {
+                    tracing::error!("virtual display {}: {e:#}; shutting it down", v.output.name());
+                    failed.push(v.device_id);
+                }
+            }
+        }
+        failed
+    }
+}
+
+/// One frame of a virtual display: drawn off screen, read back, copied into the back buffer,
+/// then the first frame sets the mode and later ones flip. `Ok(false)`: not shown this time
+/// (`transient`), tried again later.
+fn draw_virtual(renderer: &mut GlesRenderer, state: &Kompact, v: &mut VirtualHead, back: usize) -> anyhow::Result<bool> {
+    let VirtualHead { fd, buffers, output, .. } = v;
+    let (buffer, fb) = &mut buffers[back];
+    let fb = *fb;
+    let copied = crate::screenshot::capture_with(renderer, state, output, true, Fourcc::Argb8888, |w, h, bgra| {
+        let pitch = buffer.pitch() as usize;
+        fd.map_dumb_buffer(buffer).map(|mut map| virtual_display::copy_frame(bgra, w, h, &mut map, pitch))
+    })
+    .map_err(|e| anyhow::anyhow!("drawing: {e}"))?
+    .0;
+    match copied {
+        Ok(true) => {}
+        Ok(false) => anyhow::bail!("the frame doesn't fit its buffer"),
+        Err(e) => anyhow::bail!("mapping the buffer: {e}"),
+    }
+    let shown = if v.swap.is_shown() {
+        v.fd.page_flip(v.crtc, fb, PageFlipFlags::EVENT, None).map(|()| v.swap.flipping(back))
+    } else {
+        let mode = v.modes[v.mode_index];
+        v.fd.set_crtc(v.crtc, Some(fb), (0, 0), &[v.connector], Some(mode)).map(|()| v.swap.shown(back))
+    };
+    match shown {
+        Ok(()) => {
+            if std::mem::take(&mut v.refused) {
+                tracing::info!("virtual display {}: frames shown now", v.output.name());
+            }
+            Ok(true)
+        }
+        Err(e) if transient(&e) => {
+            if !std::mem::replace(&mut v.refused, true) {
+                // EACCES with the session active: another program is the device's DRM master.
+                tracing::warn!("virtual display {}: frames refused ({e}); is another program its DRM master? tried again", v.output.name());
+            }
+            Ok(false)
+        }
+        Err(e) => anyhow::bail!("showing the frame: {e}"),
+    }
+}
+
+/// Set a device up as a virtual display (if it is one) and listen for its page flips.
+fn attach_virtual<'l>(
+    backend: &Rc<RefCell<DrmBackend>>,
+    handle: &LoopHandle<'l, Kompact>,
+    session: &mut LibSeatSession,
+    device_id: libc::dev_t,
+    path: &Path,
+    state: &mut Kompact,
+) {
+    let mut b = backend.borrow_mut();
+    let before = b.geometries(state);
+    match b.add_virtual(session, device_id, path, state) {
+        Ok(Some(fd)) => {
+            b.set_kind(device_id, DeviceKind::Virtual);
+            let events = fd.clone();
+            let flips = backend.clone();
+            let token = handle.insert_source(Generic::new(fd, Interest::READ, LoopMode::Level), move |_, _, _| {
+                match events.receive_events() {
+                    Ok(list) => {
+                        let mut b = flips.borrow_mut();
+                        for event in list {
+                            if let KmsEvent::PageFlip(flip) = event {
+                                b.virtual_flip_done(device_id, flip.crtc);
+                            }
+                        }
+                        Ok(PostAction::Continue)
+                    }
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => {
+                        Ok(PostAction::Continue)
+                    }
+                    // The device is going away (udev `Removed` follows): stop reading it.
+                    Err(e) => {
+                        tracing::info!("virtual display events stopped: {e}");
+                        Ok(PostAction::Disable)
+                    }
+                }
+            });
+            match token {
+                Ok(token) => {
+                    if let Some(v) = b.virtuals.iter_mut().find(|v| v.device_id == device_id) {
+                        v.token = Some(token);
+                    }
+                    b.relayout(state, before);
+                }
+                Err(e) => {
+                    tracing::error!("virtual display: no event source ({e}); not used");
+                    if let Some((_, Some(seat_fd))) = b.remove_virtual(device_id, state) {
+                        let _ = session.close(seat_fd);
+                    }
+                    b.set_kind(device_id, DeviceKind::Failed);
+                }
+            }
+        }
+        Ok(None) => b.set_kind(device_id, DeviceKind::NotVirtual),
+        Err(e) => {
+            tracing::warn!("virtual display on {path:?}: {e:#}; not retried until it changes or Settings does");
+            b.set_kind(device_id, DeviceKind::Failed);
+        }
+    }
+}
+
+/// Shut a virtual display down and give its device back to the seat.
+fn detach_virtual<'l>(
+    backend: &Rc<RefCell<DrmBackend>>,
+    handle: &LoopHandle<'l, Kompact>,
+    session: &mut LibSeatSession,
+    device_id: libc::dev_t,
+    state: &mut Kompact,
+) {
+    let mut b = backend.borrow_mut();
+    let before = b.geometries(state);
+    let Some((token, seat_fd)) = b.remove_virtual(device_id, state) else { return };
+    if let Some(token) = token {
+        handle.remove(token);
+    }
+    if let Some(seat_fd) = seat_fd {
+        let _ = session.close(seat_fd);
+    }
+    b.relayout(state, before);
+}
+
+/// Each loop turn: virtual displays as Settings (or `KOMPACT_VIRTUAL_DISPLAYS`) wants them,
+/// devices not looked at yet set up, resolution changes applied, due frames drawn.
+fn update_virtual_displays<'l>(
+    backend: &Rc<RefCell<DrmBackend>>,
+    handle: &LoopHandle<'l, Kompact>,
+    session: &mut LibSeatSession,
+    state: &mut Kompact,
+) {
+    let (wanted, was_wanted, active) = {
+        let b = backend.borrow();
+        (b.virtual_displays_wanted(state), b.virtual_wanted, b.active)
+    };
+    if !active {
+        return;
+    }
+    if wanted != was_wanted {
+        let mut b = backend.borrow_mut();
+        b.virtual_wanted = wanted;
+        tracing::info!("virtual displays: {}", if wanted { "on" } else { "off" });
+        for d in &mut b.others {
+            if d.kind == DeviceKind::Failed {
+                d.kind = DeviceKind::Unknown;
+            }
+        }
+    }
+    if !wanted {
+        let driven: Vec<libc::dev_t> = backend.borrow().virtuals.iter().map(|v| v.device_id).collect();
+        for device_id in driven {
+            detach_virtual(backend, handle, session, device_id, state);
+            backend.borrow_mut().set_kind(device_id, DeviceKind::Unknown);
+        }
+        return;
+    }
+    let todo: Vec<(libc::dev_t, PathBuf)> = backend
+        .borrow()
+        .others
+        .iter()
+        .filter(|d| d.kind == DeviceKind::Unknown)
+        .map(|d| (d.device_id, d.path.clone()))
+        .collect();
+    for (device_id, path) in todo {
+        attach_virtual(backend, handle, session, device_id, &path, state);
+    }
+    {
+        let mut b = backend.borrow_mut();
+        if b.apply_virtual_modes(state) {
+            let before = b.geometries(state);
+            b.relayout(state, before);
+        }
+    }
+    let failed = backend.borrow_mut().render_virtuals(state);
+    for device_id in failed {
+        detach_virtual(backend, handle, session, device_id, state);
+        backend.borrow_mut().set_kind(device_id, DeviceKind::Failed);
     }
 }
 
@@ -485,16 +1026,20 @@ fn screen_off_allowed() -> bool {
 
 /// A wl_output for a connector, at 0,0 until `relayout` places it (same setup as at startup).
 fn new_output(conn: &connector::Info, mode: &Mode) -> Output {
-    let (w, h) = mode.size();
-    let output_mode = OutputMode { size: (w as i32, h as i32).into(), refresh: (mode.vrefresh() * 1000) as i32 };
+    new_output_named(output_name(conn), conn, mode, "drm")
+}
+
+/// `new_output` with its name and model given (22b: `Virtual-N`, model `virtual`).
+fn new_output_named(name: String, conn: &connector::Info, mode: &Mode, model: &str) -> Output {
+    let output_mode = output_mode(mode);
     let (pw, ph) = conn.size().unwrap_or((0, 0));
     let output = Output::new(
-        output_name(conn),
+        name,
         PhysicalProperties {
             size: (pw as i32, ph as i32).into(),
             subpixel: Subpixel::Unknown,
             make: "kompact".into(),
-            model: "drm".into(),
+            model: model.into(),
         },
     );
     output.change_current_state(Some(output_mode), Some(Transform::Normal), None, Some((0, 0).into()));
@@ -504,7 +1049,7 @@ fn new_output(conn: &connector::Info, mode: &Mode) -> Output {
 
 /// Every connector's state, as the kernel last probed it (no forced re-probe: the hotplug
 /// event already means the kernel has looked).
-fn scan_connectors(device: &DrmDevice) -> anyhow::Result<Vec<Scanned>> {
+fn scan_connectors(device: &impl ControlDevice) -> anyhow::Result<Vec<Scanned>> {
     let resources = device.resource_handles().ctx()?;
     let mut out = Vec::new();
     for &handle in resources.connectors() {
@@ -800,6 +1345,10 @@ pub fn run(spawn_cmd: String) -> anyhow::Result<()> {
         failed: Vec::new(),
         screen_off_allowed: screen_off_allowed(),
         vt_gate: Default::default(),
+        virtuals: Vec::new(),
+        others: Vec::new(),
+        virtual_env: std::env::var("KOMPACT_VIRTUAL_DISPLAYS").ok().map(|v| virtual_display::enabled_from_env(Some(&v))),
+        virtual_wanted: true,
     }));
 
     let mut state = Kompact::new(&event_loop, &mut display, spawn_cmd);
@@ -929,6 +1478,10 @@ pub fn run(spawn_cmd: String) -> anyhow::Result<()> {
                         for h in &mut b.heads {
                             h.flip_pending = false;
                         }
+                        // 22b: their flip events may never come; drawn again on return.
+                        for v in &mut b.virtuals {
+                            v.swap.forget_flip();
+                        }
                         b.active = false;
                         state.frame_timer.get_mut().reset();
                     }
@@ -947,6 +1500,11 @@ pub fn run(spawn_cmd: String) -> anyhow::Result<()> {
                         } else {
                             for h in &mut b.heads {
                                 h.flip_pending = false;
+                            }
+                            // 22b: another session may have used them: the mode is set again.
+                            for v in &mut b.virtuals {
+                                v.swap = Swap::default();
+                                v.pacer.reset();
                             }
                             b.active = true;
                             tracing::info!("DRM device reactivated");
@@ -967,7 +1525,16 @@ pub fn run(spawn_cmd: String) -> anyhow::Result<()> {
         let udev = UdevBackend::new(session.seat())
             .map_err(|e| anyhow::anyhow!("failed to watch udev for hotplug: {e}"))?;
         let our_device = backend.borrow().manager.device().device_id();
+        // 22b: other DRM devices already on the seat (a virtual display plugged in before
+        // kompact started); `update_virtual_displays` looks at them.
+        for (device_id, path) in udev.device_list() {
+            if device_id != our_device {
+                backend.borrow_mut().note_device(device_id, path.to_path_buf());
+            }
+        }
         let backend = backend.clone();
+        let handle = event_loop.handle();
+        let mut session = session.clone();
         event_loop
             .handle()
             .insert_source(udev, move |event, _, state: &mut Kompact| match event {
@@ -977,12 +1544,24 @@ pub fn run(spawn_cmd: String) -> anyhow::Result<()> {
                     b.failed.clear();
                     b.rescan(state, "hotplug");
                 }
-                UdevEvent::Changed { .. } => {}
-                UdevEvent::Added { path, .. } => tracing::info!("udev: GPU {path:?} added (not used)"),
+                // 22b: another device changed (a virtual display's connector): try it again if
+                // setting it up had failed.
+                UdevEvent::Changed { device_id } => {
+                    let mut b = backend.borrow_mut();
+                    if b.others.iter().any(|d| d.device_id == device_id && d.kind == DeviceKind::Failed) {
+                        b.set_kind(device_id, DeviceKind::Unknown);
+                    }
+                }
+                // 22b: looked at by `update_virtual_displays` (a virtual display or not).
+                UdevEvent::Added { device_id, path } => backend.borrow_mut().note_device(device_id, path),
                 UdevEvent::Removed { device_id } if device_id == our_device => {
                     tracing::warn!("udev: the GPU kompact runs on was removed")
                 }
-                UdevEvent::Removed { .. } => tracing::info!("udev: a GPU kompact doesn't use was removed"),
+                UdevEvent::Removed { device_id } => {
+                    detach_virtual(&backend, &handle, &mut session, device_id, state);
+                    backend.borrow_mut().others.retain(|d| d.device_id != device_id);
+                    tracing::info!("udev: a GPU kompact doesn't drive was removed");
+                }
             })
             .ctx()?;
         tracing::info!("watching udev for display hotplug");
@@ -1004,6 +1583,10 @@ pub fn run(spawn_cmd: String) -> anyhow::Result<()> {
 
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
     tracing::info!("listening on WAYLAND_DISPLAY={socket_name:?}");
+
+    // 22b: virtual displays' event sources are added and removed from the loop turn.
+    let loop_handle = event_loop.handle();
+    let watches_hotplug = outputs_mode.watches_hotplug();
 
     let startup_cmd = state.spawn_cmd.clone();
     event_loop
@@ -1052,6 +1635,12 @@ pub fn run(spawn_cmd: String) -> anyhow::Result<()> {
                     tracing::error!("fatal DRM rendering error: {e:#}");
                     state.loop_signal.stop();
                 }
+            }
+
+            // 22b: virtual displays, after the monitors' frames are queued (drawn off screen
+            // like a screenshot, then flipped on their own device).
+            if watches_hotplug {
+                update_virtual_displays(&backend, &loop_handle, &mut session, state);
             }
 
             // 6m-d3 (render path, off screen only): a requested window thumbnail, after this

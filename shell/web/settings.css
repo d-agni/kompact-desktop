@@ -415,6 +415,7 @@ label.row { cursor: default; }
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 .ds-display.dragging { cursor: grabbing; opacity: 0.85; border-color: var(--accent); z-index: 1; }
+.ds-display.virtual { border-style: dashed; }
 .ds-display .ds-name { font-weight: 600; }
 .ds-display .ds-size { opacity: 0.8; }
 /* 12h-2: the main display's menu bar, as macOS draws it; on others when every display has one. */

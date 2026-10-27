@@ -295,7 +295,13 @@
       <section class="card">
         <label class="row"><span class="row-label">Show the menu bar on every display<span class="hint">Off: only on the main display.</span></span><input id="ds-every" class="switch" type="checkbox" role="switch"></label>
       </section>
-      <p class="note-text">The main display has the menu bar and the dock (the white strip). Windows move with their display. Resolution and refresh rate can't be changed here.</p>
+      <!-- 22b: virtual displays (VKMS devices plugged in by apps like demirror). -->
+      <h2 class="group-title">Virtual displays</h2>
+      <section class="card">
+        <label class="row" id="vd-row"><span class="row-label">Use virtual displays<span class="hint" id="vd-hint">Apps like demirror plug in a display that's shown on a tablet, phone or another computer. The desktop extends onto it like onto a monitor.</span></span><input id="vd-on" class="switch" type="checkbox" role="switch"></label>
+        <div class="row"><span class="row-label" id="vd-mode-label">Resolution<span class="hint" id="vd-mode-hint">For every virtual display.</span></span><select id="vd-mode" class="select" aria-labelledby="vd-mode-label"></select></div>
+      </section>
+      <p class="note-text">The main display has the menu bar and the dock (the white strip). Windows move with their display. A monitor's resolution and refresh rate can't be changed here.</p>
       <p id="ds-status" class="status" role="status" aria-live="polite"></p>
     </main>
 

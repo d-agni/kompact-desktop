@@ -21,6 +21,9 @@
 //! - 12i, Settings → Lock Screen: `lock-after` and `screen-off-after` (idle minutes, 0: never).
 //! - 12j, Settings → Default Apps: `terminal=<command>`, what Open a terminal runs (empty: the
 //!   `--spawn` command kompact started with; split at spaces like it).
+//! - 22b, Settings → Displays: `virtual-displays=on|off` (drive virtual displays, VKMS devices
+//!   plugged in by apps like demirror; `KOMPACT_VIRTUAL_DISPLAYS`, if set, wins) and
+//!   `virtual-mode=auto|<w>x<h>` (their resolution; auto: the one the device prefers).
 
 use std::path::{Path, PathBuf};
 
@@ -182,6 +185,10 @@ pub struct Prefs {
     pub screen_off_after: u32,
     /// 12j: Open a terminal's command (`None`: the `--spawn` one).
     pub terminal: Option<String>,
+    /// 22b: drive virtual displays (`virtual_display.rs`).
+    pub virtual_displays: bool,
+    /// 22b: their resolution (`None`: the one the device prefers).
+    pub virtual_mode: Option<(u32, u32)>,
 }
 
 impl Default for Prefs {
@@ -212,6 +219,8 @@ impl Default for Prefs {
             lock_after: 0,
             screen_off_after: 0,
             terminal: None,
+            virtual_displays: true,
+            virtual_mode: None,
         }
     }
 }
@@ -326,6 +335,13 @@ impl Prefs {
                     _ => return Err(bad()),
                 }
             }
+            "virtual-displays" => self.virtual_displays = on_off(value).ok_or_else(bad)?,
+            "virtual-mode" => {
+                self.virtual_mode = match value {
+                    "auto" => None,
+                    _ => Some(crate::virtual_display::parse_mode(value).ok_or_else(bad)?),
+                }
+            }
             _ => return Err(format!("no setting {key:?}")),
         }
         Ok(())
@@ -376,7 +392,8 @@ impl Prefs {
              animations={}\ntitle-double-click={}\nfocus-follows-mouse={}\nappearance={}\naccent={}\nbuttons={}\n\
              shots-dir={}\nshot-banner={}\nshot-pointer={}\n\
              pointer-speed={:.1}\npointer-accel={}\nnatural-scroll={}\nmouse-natural-scroll={}\nscroll-speed={}\nleft-handed={}\ntap-to-click={}\n\
-             repeat-delay={}\nrepeat-rate={}\nlayouts={}\ncaps={}\nlock-after={}\nscreen-off-after={}\nterminal={}\n",
+             repeat-delay={}\nrepeat-rate={}\nlayouts={}\ncaps={}\nlock-after={}\nscreen-off-after={}\nterminal={}\n\
+             virtual-displays={}\nvirtual-mode={}\n",
             word(self.animations),
             self.double_click.name(),
             word(self.focus_follows_mouse),
@@ -399,8 +416,15 @@ impl Prefs {
             self.caps.name(),
             self.lock_after,
             self.screen_off_after,
-            self.terminal.as_deref().unwrap_or("")
+            self.terminal.as_deref().unwrap_or(""),
+            word(self.virtual_displays),
+            self.virtual_mode_name()
         )
+    }
+
+    /// 22b: `virtual-mode`'s value: `auto` or `<w>x<h>`.
+    pub fn virtual_mode_name(&self) -> String {
+        self.virtual_mode.map_or("auto".to_string(), |(w, h)| format!("{w}x{h}"))
     }
 
     /// `{"type":"settings",…}` for the shell. `locked`: settings an environment variable holds
@@ -415,7 +439,8 @@ impl Prefs {
             "{{\"type\":\"settings\",\"version\":\"{}\",\"animations\":{},\"title_double_click\":\"{}\",\"focus_follows_mouse\":{},             \"appearance\":\"{}\",\"dark\":{dark},\"accent\":\"{}\",\"buttons\":\"{}\",\
              \"shots_dir\":{},\"shots_dir_default\":{},\"shot_banner\":{},\"shot_pointer\":{},\
              \"pointer_speed\":{:.1},\"pointer_accel\":{},\"natural_scroll\":{},\"mouse_natural_scroll\":{},\"scroll_speed\":{},\"left_handed\":{},\"tap_to_click\":{},\
-             \"repeat_delay\":{},\"repeat_rate\":{},\"layouts\":{},\"caps\":\"{}\",\"lock_after\":{},\"screen_off_after\":{},\"terminal\":{},\"terminal_auto\":{},\"locked\":[{}]{message}}}\n",
+             \"repeat_delay\":{},\"repeat_rate\":{},\"layouts\":{},\"caps\":\"{}\",\"lock_after\":{},\"screen_off_after\":{},\"terminal\":{},\"terminal_auto\":{},\
+             \"virtual_displays\":{},\"virtual_mode\":\"{}\",\"locked\":[{}]{message}}}\n",
             // 15a: the compositor's version, for Settings → About.
             env!("CARGO_PKG_VERSION"),
             self.animations,
@@ -443,6 +468,8 @@ impl Prefs {
             self.screen_off_after,
             crate::ipc::json_string(self.terminal.as_deref().unwrap_or("")),
             crate::ipc::json_string(terminal_auto),
+            self.virtual_displays,
+            self.virtual_mode_name(),
             locked.join(",")
         )
     }
@@ -515,6 +542,8 @@ mod tests {
                         lock_after: if animations { 5 } else { 0 },
                         screen_off_after: if animations { 0 } else { 2 },
                         terminal: animations.then(|| "ptyxis --new-window".into()),
+                        virtual_displays: !animations,
+                        virtual_mode: animations.then_some((1920, 1080)),
                     };
                     assert_eq!(Prefs::parse(&p.to_text()), p.clone());
                 }
@@ -556,6 +585,12 @@ mod tests {
         assert!(p.set_path("terminal", "foot\nquit").is_err() && p.terminal.is_some());
         assert!(p.set_path("terminal", "").is_ok() && p.terminal.is_none());
         assert!(p.animations, "a refused change changes nothing");
+        // 22b: virtual displays.
+        assert!(p.virtual_displays);
+        assert!(p.set("virtual-displays", "off").is_ok() && !p.virtual_displays);
+        assert!(p.set("virtual-mode", "1920x1080").is_ok() && p.virtual_mode == Some((1920, 1080)));
+        assert!(p.set("virtual-mode", "huge").is_err() && p.virtual_mode == Some((1920, 1080)));
+        assert!(p.set("virtual-mode", "auto").is_ok() && p.virtual_mode.is_none());
     }
 
     #[test]
@@ -567,7 +602,8 @@ mod tests {
              \"shots_dir\":\"/h/Pictures/Screenshots\",\"shots_dir_default\":true,\"shot_banner\":true,\"shot_pointer\":false,\
              \"pointer_speed\":0.0,\"pointer_accel\":true,\"natural_scroll\":false,\"mouse_natural_scroll\":false,\"scroll_speed\":100,\"left_handed\":false,\"tap_to_click\":true,\
              \"repeat_delay\":200,\"repeat_rate\":25,\"layouts\":\"us\",\"caps\":\"normal\",\"lock_after\":0,\"screen_off_after\":0,\
-             \"terminal\":\"\",\"terminal_auto\":\"foot\",\"locked\":[\"animations\"]}\n")
+             \"terminal\":\"\",\"terminal_auto\":\"foot\",\
+             \"virtual_displays\":true,\"virtual_mode\":\"auto\",\"locked\":[\"animations\"]}\n")
         );
         assert!(p.to_json(&[], Some("no \"x\""), true, "", "").ends_with(",\"message\":\"no \\\"x\\\"\"}\n"));
     }

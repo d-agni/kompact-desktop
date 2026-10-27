@@ -499,17 +499,24 @@ pub struct DisplayInfo {
     pub refresh_mhz: i32,
     /// Physical size in millimetres (0: unknown).
     pub mm: (i32, i32),
+    /// 22b: a virtual display, with the sizes Settings can choose from (`None`: a monitor).
+    pub virtual_sizes: Option<Vec<(u32, u32)>>,
 }
 
 /// 12h-1: `{"type":"displays","outputs":[{"name":"VGA-1","x":0,"y":0,"w":1440,"h":900,"refresh":60000,"mm_w":410,"mm_h":260}],"primary":"VGA-1","menu_bars":"primary"}`
-/// (12h-2: the main display, and `menu_bars` `every` or `primary`).
+/// (12h-2: the main display, and `menu_bars` `every` or `primary`; 22b: a virtual display adds
+/// `"virtual":true,"modes":["1920x1080",…]`).
 pub fn encode_displays(outputs: &[DisplayInfo], primary: &str, every_menu_bar: bool) -> String {
     let list: Vec<String> = outputs
         .iter()
         .map(|d| {
             let (x, y, w, h) = d.rect;
+            let virtual_sizes = d.virtual_sizes.as_ref().map_or(String::new(), |sizes| {
+                let sizes: Vec<String> = sizes.iter().map(|(w, h)| format!("\"{w}x{h}\"")).collect();
+                format!(",\"virtual\":true,\"modes\":[{}]", sizes.join(","))
+            });
             format!(
-                "{{\"name\":{},\"x\":{x},\"y\":{y},\"w\":{w},\"h\":{h},\"refresh\":{},\"mm_w\":{},\"mm_h\":{}}}",
+                "{{\"name\":{},\"x\":{x},\"y\":{y},\"w\":{w},\"h\":{h},\"refresh\":{},\"mm_w\":{},\"mm_h\":{}{virtual_sizes}}}",
                 json_string(&d.name),
                 d.refresh_mhz,
                 d.mm.0,
@@ -951,11 +958,19 @@ mod tests {
         assert_eq!(parse_request("display-move VGA-1 0"), None);
         assert_eq!(parse_request("display-move VGA-1 0 0 0"), None);
         assert_eq!(parse_request("display-move VGA-1 0 999999"), None);
-        let d = DisplayInfo { name: "VGA-1".into(), rect: (0, 0, 1440, 900), refresh_mhz: 60000, mm: (410, 260) };
+        let d = DisplayInfo { name: "VGA-1".into(), rect: (0, 0, 1440, 900), refresh_mhz: 60000, mm: (410, 260), virtual_sizes: None };
         assert_eq!(
             encode_displays(&[d], "VGA-1", true),
             "{\"type\":\"displays\",\"outputs\":[{\"name\":\"VGA-1\",\"x\":0,\"y\":0,\"w\":1440,\"h\":900,\"refresh\":60000,\"mm_w\":410,\"mm_h\":260}],\"primary\":\"VGA-1\",\"menu_bars\":\"every\"}\n"
         );
+        let v = DisplayInfo {
+            name: "Virtual-1".into(),
+            rect: (1440, 0, 1024, 768),
+            refresh_mhz: 60000,
+            mm: (0, 0),
+            virtual_sizes: Some(vec![(1920, 1080), (1024, 768)]),
+        };
+        assert!(encode_displays(&[v], "VGA-1", false).contains("\"mm_h\":0,\"virtual\":true,\"modes\":[\"1920x1080\",\"1024x768\"]}"));
         assert_eq!(parse_request("display-main HDMIA-1"), Some(Request::DisplayMain("HDMIA-1".into())));
         assert_eq!(parse_request("display-main a;b"), None);
         assert_eq!(parse_request("menu-bars every"), Some(Request::MenuBars(true)));

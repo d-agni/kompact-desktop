@@ -501,7 +501,8 @@ renderDock();
  *   pointer_speed: number, pointer_accel: boolean, natural_scroll: boolean, mouse_natural_scroll: boolean,
  *   scroll_speed: number, left_handed: boolean,
  *   tap_to_click: boolean, repeat_delay: number, repeat_rate: number, layouts: string, caps: string,
- *   lock_after: number, screen_off_after: number, terminal?: string, terminal_auto?: string, locked: string[], message?: string}} KompactSettings */
+ *   lock_after: number, screen_off_after: number, terminal?: string, terminal_auto?: string,
+ *   virtual_displays?: boolean, virtual_mode?: string, locked: string[], message?: string}} KompactSettings */
 /** @type {KompactSettings | null} */
 let kset = null;
 
@@ -2033,7 +2034,8 @@ $("lk-now").addEventListener("click", () => {
 
 // ---- 12h-1: Displays (kompact's arrangement; it snaps a dropped display next to the others) ----
 
-/** @typedef {{name: string, x: number, y: number, w: number, h: number, refresh: number, mm_w: number, mm_h: number}} DisplayInfo */
+/** @typedef {{name: string, x: number, y: number, w: number, h: number, refresh: number, mm_w: number, mm_h: number,
+ *   virtual?: boolean, modes?: string[]}} DisplayInfo */
 /** @type {DisplayInfo[]} */
 let displays = [];
 /** 12h-2: the main display, and whether every display has a menu bar. */
@@ -2072,6 +2074,7 @@ function renderDisplays() {
     stage.replaceChildren(Object.assign(document.createElement("div"), { className: "ds-empty", textContent: "kompact hasn't said where the displays are yet." }));
     list.replaceChildren();
     /** @type {HTMLInputElement} */ ($("ds-every")).disabled = true;
+    renderVirtual();
     return;
   }
   // The whole arrangement in the middle, with room around it to drag a display to any side.
@@ -2095,7 +2098,8 @@ function renderDisplays() {
       el.style.top = `${d.y * scale + dsView.oy}px`;
       el.style.width = `${d.w * scale}px`;
       el.style.height = `${d.h * scale}px`;
-      el.title = `${d.name}: drag to move it`;
+      el.title = `${d.name}${d.virtual ? " (virtual)" : ""}: drag to move it`;
+      el.classList.toggle("virtual", !!d.virtual);
       if (d.name === dsMain || dsEvery) el.append(Object.assign(document.createElement("span"), { className: d.name === dsMain ? "ds-bar" : "ds-bar dim" }));
       el.append(
         Object.assign(document.createElement("span"), { className: "ds-name", textContent: d.name }),
@@ -2105,13 +2109,15 @@ function renderDisplays() {
       return el;
     }),
   );
+  renderVirtual();
   list.replaceChildren(
     ...displays.map((d) => {
       const row = document.createElement("div");
       row.className = "row";
       const hz = d.refresh ? `, ${Math.round(d.refresh / 1000)} Hz` : "";
       const inches = d.mm_w && d.mm_h ? `, ${Math.round(Math.hypot(d.mm_w, d.mm_h) / 25.4)}-inch` : "";
-      row.append(netLabel(d.name, `${d.w} × ${d.h}${hz}${inches}, at ${d.x}, ${d.y}`));
+      const kind = d.virtual ? ", virtual display" : "";
+      row.append(netLabel(d.name, `${d.w} × ${d.h}${hz}${inches}${kind}, at ${d.x}, ${d.y}`));
       if (d.name === dsMain) row.append(Object.assign(document.createElement("span"), { className: "ds-main", textContent: "Main display" }));
       else if (displays.length > 1) {
         const b = Object.assign(document.createElement("button"), { className: "btn", textContent: "Use as Main Display" });
@@ -2185,6 +2191,40 @@ $("ds-stage").addEventListener("pointercancel", dsUp);
 window.addEventListener("resize", () => {
   if (!$("pane-displays").hidden) renderDisplays();
 });
+
+// ---- 22b: virtual displays (kompact's `virtual-displays` and `virtual-mode` settings) ----
+
+/** Offered while no virtual display is plugged in (VKMS offers these and more). */
+const VD_SIZES = ["3840x2160", "2560x1600", "2560x1440", "1920x1200", "1920x1080", "1680x1050", "1600x900", "1440x900", "1366x768", "1280x800", "1280x720", "1024x768"];
+
+function renderVirtual() {
+  const k = kset;
+  const on = /** @type {HTMLInputElement} */ ($("vd-on"));
+  const mode = /** @type {HTMLSelectElement} */ ($("vd-mode"));
+  const locked = !!k?.locked.includes("virtual-displays");
+  on.checked = k?.virtual_displays !== false;
+  on.disabled = !k || locked;
+  $("vd-row").classList.toggle("off", locked);
+  const plugged = displays.filter((d) => d.virtual);
+  $("vd-hint").textContent = locked
+    ? "Set by KOMPACT_VIRTUAL_DISPLAYS for this session."
+    : plugged.length
+      ? `In use: ${plugged.map((d) => `${d.name} (${d.w} × ${d.h})`).join(", ")}.`
+      : "Apps like demirror plug in a display that's shown on a tablet, phone or another computer. The desktop extends onto it like onto a monitor.";
+  // The sizes the plugged-in displays offer, else the usual ones.
+  const offered = plugged.length ? [...new Set(plugged.flatMap((d) => d.modes || []))] : VD_SIZES;
+  const wanted = k?.virtual_mode || "auto";
+  if (wanted !== "auto" && !offered.includes(wanted)) offered.unshift(wanted);
+  mode.replaceChildren(
+    Object.assign(document.createElement("option"), { value: "auto", textContent: "Automatic (the size it’s viewed at)" }),
+    ...offered.map((s) => Object.assign(document.createElement("option"), { value: s, textContent: s.replace("x", " × ") })),
+  );
+  mode.value = wanted;
+  mode.disabled = !k || !on.checked;
+}
+
+$("vd-on").addEventListener("change", (e) => setKompact("virtual-displays", /** @type {HTMLInputElement} */ (e.target).checked ? "on" : "off"));
+$("vd-mode").addEventListener("change", (e) => setKompact("virtual-mode", /** @type {HTMLSelectElement} */ (e.target).value));
 
 // ---- 12f: Mouse & Keyboard (kompact's settings; the layouts' names from xkb's catalogue) ----
 
@@ -2321,6 +2361,7 @@ document.querySelectorAll("[data-caps]").forEach((b) =>
 $("in-add").addEventListener("input", renderLayoutSearch);
 
 function renderWindows() {
+  renderVirtual();
   renderDefaults();
   renderAppearance();
   renderInput();
@@ -2360,6 +2401,7 @@ const STATUS_OF = /** @type {Record<string, string>} */ ({
   "mouse-natural-scroll": "in-status", "scroll-speed": "in-status",
   "tap-to-click": "in-status", "repeat-delay": "in-status", "repeat-rate": "in-status", layouts: "in-status", caps: "in-status",
   "lock-after": "lk-status", "screen-off-after": "lk-status",
+  "virtual-displays": "ds-status", "virtual-mode": "ds-status",
 });
 
 /** @param {string} key @param {string} value */
