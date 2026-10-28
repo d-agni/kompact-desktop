@@ -119,7 +119,8 @@ struct VirtualHead {
     crtc: crtc::Handle,
     modes: Vec<Mode>,
     preferred: usize,
-    mode_index: usize,
+    /// The mode it's in: one of `modes`, or (22f) one made to measure for the viewer.
+    mode: Mode,
     /// Two dumb buffers and their framebuffers (`Swap` picks one).
     buffers: Vec<(DumbBuffer, framebuffer::Handle)>,
     output: Output,
@@ -135,12 +136,57 @@ struct VirtualHead {
     hint_path: Option<PathBuf>,
     hint: Option<(u32, u32)>,
     hint_read: Instant,
+    /// 22e: the input hint file for this device and the device names it lists.
+    input_hint_path: Option<PathBuf>,
+    input_names: Vec<String>,
 }
 
 impl VirtualHead {
     fn sizes(&self) -> Vec<(u32, u32)> {
         mode_sizes(&self.modes)
     }
+
+    /// The mode it should be in now (Settings, the viewer's size, the preferred one).
+    fn wanted_mode(&self, setting: Option<(u32, u32)>) -> Mode {
+        virtual_mode(&self.modes, self.preferred, setting, self.hint)
+    }
+}
+
+/// 22d/22f: a virtual display's mode: Settings' resolution if the device has it, else one of
+/// exactly the size it's viewed at (made to measure if the device doesn't offer it), else the
+/// preferred one.
+fn virtual_mode(modes: &[Mode], preferred: usize, setting: Option<(u32, u32)>, hint: Option<(u32, u32)>) -> Mode {
+    let sizes = mode_sizes(modes);
+    if let Some((w, h)) = virtual_display::custom_size(&sizes, setting, hint) {
+        return made_to_measure(w, h);
+    }
+    modes[virtual_display::pick_mode(&sizes, preferred, setting, hint)]
+}
+
+/// 22f: a 60 Hz mode of `w`x`h` (`virtual_display::timings`), named like the kernel's.
+fn made_to_measure(w: u32, h: u32) -> Mode {
+    let (hsync_start, hsync_end, htotal, vsync_start, vsync_end, vtotal, clock) = virtual_display::timings(w, h);
+    let mut name = [0; 32];
+    for (to, from) in name.iter_mut().zip(format!("{w}x{h}").bytes()) {
+        *to = from as std::ffi::c_char;
+    }
+    Mode::from(drm_ffi::drm_mode_modeinfo {
+        clock,
+        hdisplay: w as u16,
+        hsync_start: hsync_start as u16,
+        hsync_end: hsync_end as u16,
+        htotal: htotal as u16,
+        hskew: 0,
+        vdisplay: h as u16,
+        vsync_start: vsync_start as u16,
+        vsync_end: vsync_end as u16,
+        vtotal: vtotal as u16,
+        vscan: 0,
+        vrefresh: 60,
+        flags: drm_ffi::DRM_MODE_FLAG_PHSYNC | drm_ffi::DRM_MODE_FLAG_NVSYNC,
+        type_: drm_ffi::DRM_MODE_TYPE_USERDEF,
+        name,
+    })
 }
 
 /// 22b: a DRM device on the seat other than the one kompact runs on.
@@ -483,7 +529,7 @@ impl DrmBackend {
             .heads
             .iter()
             .map(|h| (&h.output, &h.mode))
-            .chain(self.virtuals.iter().map(|v| (&v.output, &v.modes[v.mode_index])))
+            .chain(self.virtuals.iter().map(|v| (&v.output, &v.mode)))
             .collect();
         let sizes: Vec<Size<i32, Logical>> =
             placed.iter().map(|(_, m)| Size::from((m.size().0 as i32, m.size().1 as i32))).collect();
@@ -552,12 +598,16 @@ fn mode_sizes(modes: &[Mode]) -> Vec<(u32, u32)> {
     modes.iter().map(|m| (m.size().0 as u32, m.size().1 as u32)).collect()
 }
 
-/// 22d: `<MODE_HINT_DIR>/<device name>`, the name sysfs gives the DRM device (VKMS: its
-/// configfs directory's).
-fn mode_hint_path(device_id: libc::dev_t) -> Option<PathBuf> {
+/// 22d/22e: `<dir>/<device name>`, the name sysfs gives the DRM device (VKMS: its configfs
+/// directory's).
+fn hint_file(dir: &str, device_id: libc::dev_t) -> Option<PathBuf> {
     let sys = format!("/sys/dev/char/{}:{}/device", libc::major(device_id), libc::minor(device_id));
     let name = std::fs::read_link(sys).ok()?.file_name()?.to_owned();
-    Some(Path::new(virtual_display::MODE_HINT_DIR).join(name))
+    Some(Path::new(dir).join(name))
+}
+
+fn read_input_hint(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path).map(|t| virtual_display::parse_input_hint(&t)).unwrap_or_default()
 }
 
 fn read_mode_hint(path: &Path) -> Option<(u32, u32)> {
@@ -650,8 +700,8 @@ impl DrmBackend {
                 tracing::info!(
                     "virtual display {} on {path:?}: {}x{}, {} modes",
                     head.output.name(),
-                    head.modes[head.mode_index].size().0,
-                    head.modes[head.mode_index].size().1,
+                    head.mode.size().0,
+                    head.mode.size().1,
                     head.modes.len()
                 );
                 self.virtuals.push(head);
@@ -676,13 +726,13 @@ impl DrmBackend {
             .ok_or_else(|| anyhow::anyhow!("no connected connector with modes"))?;
         let modes = entry.conn.modes().to_vec();
         let preferred = modes.iter().position(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED)).unwrap_or(0);
-        let hint_path = mode_hint_path(device_id);
+        let hint_path = hint_file(virtual_display::MODE_HINT_DIR, device_id);
+        let input_hint_path = hint_file(virtual_display::INPUT_HINT_DIR, device_id);
         let hint = hint_path.as_deref().and_then(read_mode_hint);
-        let mode_index = virtual_display::pick_mode(&mode_sizes(&modes), preferred, state.prefs.virtual_mode, hint);
+        let mode = virtual_mode(&modes, preferred, state.prefs.virtual_mode, hint);
         if let Some((w, h)) = hint {
             tracing::info!("virtual display: viewed at {w}x{h} (mode hint)");
         }
-        let mode = modes[mode_index];
         let buffers = virtual_buffers(&fd, &mode)?;
         let taken: Vec<String> = state.outputs.iter().map(|o| o.name()).collect();
         let name = virtual_display::unique_name(&output_name(&entry.conn), &taken);
@@ -698,7 +748,7 @@ impl DrmBackend {
             crtc: entry.crtcs[0],
             modes,
             preferred,
-            mode_index,
+            mode,
             buffers,
             output,
             global,
@@ -709,6 +759,8 @@ impl DrmBackend {
             hint_path,
             hint,
             hint_read: Instant::now(),
+            input_names: input_hint_path.as_deref().map(read_input_hint).unwrap_or_default(),
+            input_hint_path,
         })
     }
 
@@ -749,17 +801,18 @@ impl DrmBackend {
                     }
                     v.hint = hint;
                 }
+                // 22e: the viewer's input devices may come a moment after the display.
+                v.input_names = v.input_hint_path.as_deref().map(read_input_hint).unwrap_or_default();
             }
-            let index = virtual_display::pick_mode(&v.sizes(), v.preferred, state.prefs.virtual_mode, v.hint);
-            if index == v.mode_index {
+            let mode = v.wanted_mode(state.prefs.virtual_mode);
+            if mode == v.mode {
                 continue;
             }
-            let mode = v.modes[index];
             match virtual_buffers(&v.fd, &mode) {
                 Ok(buffers) => {
                     let old = std::mem::replace(&mut v.buffers, buffers);
                     free_buffers(&v.fd, old);
-                    v.mode_index = index;
+                    v.mode = mode;
                     let new_mode = output_mode(&mode);
                     v.output.change_current_state(Some(new_mode), None, None, None);
                     v.output.set_preferred(new_mode);
@@ -829,7 +882,7 @@ fn draw_virtual(renderer: &mut GlesRenderer, state: &Kompact, v: &mut VirtualHea
     let shown = if v.swap.is_shown() {
         v.fd.page_flip(v.crtc, fb, PageFlipFlags::EVENT, None).map(|()| v.swap.flipping(back))
     } else {
-        let mode = v.modes[v.mode_index];
+        let mode = v.mode;
         v.fd.set_crtc(v.crtc, Some(fb), (0, 0), &[v.connector], Some(mode)).map(|()| v.swap.shown(back))
     };
     match shown {
@@ -979,6 +1032,19 @@ fn update_virtual_displays<'l>(
         if b.apply_virtual_modes(state) {
             let before = b.geometries(state);
             b.relayout(state, before);
+        }
+    }
+    // 22e: which input devices point at which virtual display, for `on_pointer_motion_absolute`.
+    {
+        let b = backend.borrow();
+        let same = state.absolute_targets.len() == b.virtuals.iter().map(|v| v.input_names.len()).sum::<usize>()
+            && b.virtuals.iter().all(|v| v.input_names.iter().all(|n| state.absolute_targets.iter().any(|(t, o)| t == n && *o == v.output)));
+        if !same {
+            state.absolute_targets =
+                b.virtuals.iter().flat_map(|v| v.input_names.iter().map(|n| (n.clone(), v.output.clone()))).collect();
+            let names: Vec<String> =
+                state.absolute_targets.iter().map(|(n, o)| format!("{n} -> {}", o.name())).collect();
+            tracing::info!("virtual display input: {}", if names.is_empty() { "none".into() } else { names.join(", ") });
         }
     }
     let failed = backend.borrow_mut().render_virtuals(state);

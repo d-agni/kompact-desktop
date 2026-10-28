@@ -168,6 +168,16 @@ pub fn choose_mode(sizes: &[(u32, u32)], preferred: usize, wanted: Option<(u32, 
 /// preferred mode itself). The device name is the one sysfs gives the DRM device.
 pub const MODE_HINT_DIR: &str = "/run/vkms-mode";
 
+/// 22e: input hints: `<dir>/<device name>` lists (one a line) the input devices that point at
+/// that virtual display (demirror's pointer for a viewer): their absolute positions are
+/// positions on it, not on the output under the pointer.
+pub const INPUT_HINT_DIR: &str = "/run/vkms-input";
+
+/// 22e: an input hint file's device names.
+pub fn parse_input_hint(text: &str) -> Vec<String> {
+    text.lines().map(str::trim).filter(|l| !l.is_empty() && l.len() <= 200).map(str::to_string).collect()
+}
+
 /// 22d: a mode hint file's contents.
 pub fn parse_hint(text: &str) -> Option<(u32, u32)> {
     parse_mode(text.trim())
@@ -196,6 +206,25 @@ pub fn pick_mode(sizes: &[(u32, u32)], preferred: usize, setting: Option<(u32, u
         return choose_mode(sizes, preferred, setting);
     }
     hint.and_then(|h| best_fit(sizes, h)).unwrap_or(preferred)
+}
+
+/// 22f: a size the device doesn't offer, for a mode made to measure: the viewer's size
+/// (mode hint), unless Settings chose a resolution or the device has that size anyway. VKMS
+/// takes any mode up to 8192x8192, so a phone held upright gets a tall display that fills it,
+/// rather than the closest of VKMS's fixed (all landscape) sizes.
+pub fn custom_size(sizes: &[(u32, u32)], setting: Option<(u32, u32)>, hint: Option<(u32, u32)>) -> Option<(u32, u32)> {
+    let hint = hint?;
+    (setting.is_none() && !sizes.contains(&hint)).then_some(hint)
+}
+
+/// 22f: timings for a mode of `w`x`h` at 60 Hz, the CVT reduced-blanking way (a monitor would
+/// need them right; VKMS only uses them for its vblank timer): `(hsync_start, hsync_end, htotal,
+/// vsync_start, vsync_end, vtotal, clock in kHz)`.
+pub fn timings(w: u32, h: u32) -> (u32, u32, u32, u32, u32, u32, u32) {
+    let (htotal, vblank) = (w + 160, (h / 20).max(25));
+    let vtotal = h + vblank;
+    let clock = (htotal as u64 * vtotal as u64 * 60).div_ceil(1000) as u32;
+    (w + 48, w + 80, htotal, h + 3, h + 9, vtotal, clock)
 }
 
 /// The sizes Settings offers for a virtual display: each once, largest first.
@@ -311,11 +340,17 @@ mod tests {
         assert_eq!(best_fit(&[], (640, 480)), None);
         assert_eq!(parse_hint("1920x1080\n"), Some((1920, 1080)));
         assert_eq!(parse_hint("big"), None);
+        assert_eq!(parse_input_hint("demirror-3 pointer\n\n  tablet  \n"), vec!["demirror-3 pointer", "tablet"]);
+        assert!(parse_input_hint("").is_empty());
 
         assert_eq!(pick_mode(&sizes, 0, None, None), 0, "nothing said: the preferred one");
         assert_eq!(pick_mode(&sizes, 0, None, Some((1920, 1080))), 2, "the viewer's size");
         assert_eq!(pick_mode(&sizes, 0, Some((1280, 720)), Some((1920, 1080))), 3, "Settings wins");
         assert_eq!(pick_mode(&sizes, 0, Some((1366, 768)), Some((1920, 1080))), 0, "Settings' size not offered");
+        assert_eq!(custom_size(&sizes, None, Some((1080, 2400))), Some((1080, 2400)), "a phone held upright");
+        assert_eq!(custom_size(&sizes, None, Some((1920, 1080))), None, "offered: that mode");
+        assert_eq!(custom_size(&sizes, Some((1280, 720)), Some((1080, 2400))), None, "Settings wins");
+        assert_eq!(custom_size(&sizes, None, None), None);
     }
 
     #[test]
@@ -332,5 +367,16 @@ mod tests {
         assert!(!copy_frame(&bgra, 2, 2, &mut [0; 24], 4), "pitch shorter than a row");
         assert!(!copy_frame(&bgra[..8], 2, 2, &mut [0; 24], 12), "frame shorter than its size");
         assert!(!copy_frame(&[], 0, 0, &mut [0; 24], 12));
+    }
+
+    #[test]
+    fn made_to_measure_modes_run_at_60_hz() {
+        for (w, h) in [(1080, 2400), (1920, 864), (8192, 8192), (320, 200)] {
+            let (hs, he, ht, vs, ve, vt, clock) = timings(w, h);
+            assert!(w < hs && hs < he && he < ht && h < vs && vs < ve && ve < vt, "{w}x{h}");
+            assert!(ht <= u16::MAX as u32 && vt <= u16::MAX as u32, "{w}x{h} fits drm_mode_modeinfo");
+            let hz = clock as f64 * 1000.0 / (ht as f64 * vt as f64);
+            assert!((59.9..60.1).contains(&hz), "{w}x{h}: {hz} Hz");
+        }
     }
 }

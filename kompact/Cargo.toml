@@ -33,6 +33,9 @@ libc = "0.2"
 ab_glyph = "0.2"
 # 9a: screenshots as PNG files (src/screenshot.rs); pure Rust.
 png = "0.17"
+# 22f: a virtual display's mode of exactly the size it's viewed at (drm_mode_modeinfo);
+# already in the tree through smithay's drm.
+drm-ffi = "0.9"
 
 [profile.release]
 opt-level = "z"       # optimize for size

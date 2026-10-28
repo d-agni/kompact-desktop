@@ -304,6 +304,14 @@ impl Kompact {
         &mut self,
         event: impl AbsolutePositionEvent<B>,
     ) {
+        // 22e: a device that points at a virtual display (a viewer's pointer) moves on it.
+        let name = smithay::backend::input::Device::name(&event.device());
+        let target = self.absolute_targets.iter().find(|(n, _)| *n == name).map(|(_, o)| o);
+        if let Some(geo) = target.and_then(|o| self.space.output_geometry(o)) {
+            let pos = geo.loc.to_f64() + Point::from((event.x_transformed(geo.size.w), event.y_transformed(geo.size.h)));
+            self.move_pointer(pos, event.time_msec());
+            return;
+        }
         let output_geo = self.output_geometry();
         let pos = Point::from((
             event.x_transformed(output_geo.size.w),

@@ -132,6 +132,9 @@ pub struct Kompact {
     /// 22b: the virtual displays' outputs and the sizes each offers (set by the DRM backend,
     /// for Settings → Displays).
     pub virtual_sizes: Vec<(String, Vec<(u32, u32)>)>,
+    /// 22e: input devices whose absolute positions are on a virtual display (input hints),
+    /// with that display's output (set by the DRM backend).
+    pub absolute_targets: Vec<(String, smithay::output::Output)>,
 
     pub seat: Seat<Self>,
     /// What runs at startup (empty: nothing, `--no-startup-app`).
@@ -459,6 +462,7 @@ impl Kompact {
             awake_apps: Vec::new(),
             screens_off: false,
             virtual_sizes: Vec::new(),
+            absolute_targets: Vec::new(),
             seat,
             terminal_cmd: if spawn_cmd.trim().is_empty() { crate::default_spawn_command() } else { spawn_cmd.clone() },
             spawn_cmd,
